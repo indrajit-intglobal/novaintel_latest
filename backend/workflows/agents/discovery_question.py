@@ -1,0 +1,139 @@
+"""
+Discovery Question Agent - Generates categorized discovery questions.
+"""
+from typing import Dict, Any, List
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
+from utils.config import settings
+from utils.llm_factory import get_llm
+from utils.model_router import TaskType
+from workflows.schemas.output_schemas import DiscoveryQuestionsOutput
+from workflows.prompts.prompt_templates import get_few_shot_discovery_question_prompt
+
+class DiscoveryQuestionAgent:
+    """Agent that generates discovery questions."""
+    
+    def __init__(self):
+        self.llm = None
+        self.categories = ["Business", "Technology", "KPIs", "Compliance"]
+        self._initialize()
+    
+    def _initialize(self):
+        """Initialize the LLM with intelligent routing."""
+        try:
+            # Use Gemini Flash for fast generation (questions are straightforward)
+            self.llm = get_llm(
+                provider="gemini",  # Force Gemini
+                temperature=0.3,
+                task_type=TaskType.FAST_GENERATION
+            )
+            print(f"✓ Discovery Question Agent initialized with intelligent routing")
+        except Exception as e:
+            print(f"Error initializing Discovery Question Agent: {e}")
+    
+    def generate_questions(
+        self,
+        challenges: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Generate discovery questions categorized by type.
+        
+        Args:
+            challenges: List of challenges from Challenge Extractor
+        
+        Returns:
+            dict with discovery_questions by category
+        """
+        if not self.llm:
+            return {
+                "discovery_questions": {},
+                "error": "LLM not initialized"
+            }
+        
+        challenges_text = ""
+        if challenges:
+            challenges_text = "\n".join([
+                f"- {ch.get('description', '')} (Type: {ch.get('type', 'Unknown')})"
+                for ch in challenges
+            ])
+        
+        # Set up structured output parser
+        output_parser = PydanticOutputParser(pydantic_object=DiscoveryQuestionsOutput)
+        
+        # Simple format instructions without JSON schema to avoid template parsing issues
+        # Use escaped curly braces to prevent LangChain from treating JSON field names as template variables
+        format_instructions_simple = """Return your response as a valid JSON object with question arrays:
+- business_questions: Array of business-related questions
+- technical_questions: Array of technical questions
+- kpi_questions: Array of KPI and metrics questions
+- compliance_questions: Array of compliance questions
+- other_questions: Array of other questions
+
+Example: {{"business_questions": ["..."], "technical_questions": ["..."], ...}}"""
+        
+        system_prompt = get_few_shot_discovery_question_prompt()
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt + """
+
+Organize questions by category: Business, Technology, KPIs, Compliance, and Other.
+Generate 3-5 questions per category.
+"""),
+            ("user", """Based on these challenges, generate discovery questions:
+
+Challenges:
+{challenges}
+
+{format_instructions}
+
+Provide questions in the specified JSON format.""")
+        ])
+        
+        try:
+            chain = prompt | self.llm | output_parser
+            response = chain.invoke({
+                "challenges": challenges_text or "No challenges identified",
+                "format_instructions": format_instructions_simple
+            })
+            
+            # Response is already parsed as Pydantic model
+            if isinstance(response, DiscoveryQuestionsOutput):
+                questions = {
+                    "Business": response.business_questions,
+                    "Technology": response.technical_questions,
+                    "KPIs": response.kpi_questions,
+                    "Compliance": response.compliance_questions,
+                    "Other": response.other_questions
+                }
+            elif isinstance(response, dict):
+                questions = {
+                    "Business": response.get("business_questions", []),
+                    "Technology": response.get("technical_questions", []),
+                    "KPIs": response.get("kpi_questions", []),
+                    "Compliance": response.get("compliance_questions", []),
+                    "Other": response.get("other_questions", [])
+                }
+            else:
+                # Fallback
+                questions = {
+                    "Business": ["What are your primary business objectives?"],
+                    "Technology": ["What is your current technology stack?"],
+                    "KPIs": ["What metrics do you track?"],
+                    "Compliance": ["What compliance requirements must be met?"],
+                    "Other": []
+                }
+            
+            return {
+                "discovery_questions": questions,
+                "error": None
+            }
+        
+        except Exception as e:
+            return {
+                "discovery_questions": {},
+                "error": str(e)
+            }
+
+# Global instance
+discovery_question_agent = DiscoveryQuestionAgent()
+

@@ -1,0 +1,1017 @@
+import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { FileText, MessageSquare, Send, Sparkles, CheckCircle2, Loader2, Eye, Target, Shield } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import { apiClient } from "@/lib/api";
+import { toast } from "sonner";
+import { useState, useEffect } from "react";
+import { MarkdownText } from "@/components/ui/markdown-text";
+import { Switch } from "@/components/ui/switch";
+import { DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import WorkflowStepLoader from "@/components/WorkflowStepLoader";
+import { GoNoGoAnalysis } from "@/components/GoNoGoAnalysis";
+import { BattleCardSidebar } from "@/components/BattleCardSidebar";
+
+export default function Insights() {
+  const [searchParams] = useSearchParams();
+  const projectId = parseInt(searchParams.get("project_id") || "0");
+  const navigate = useNavigate();
+  const [chatMessage, setChatMessage] = useState("");
+  const [chatHistory, setChatHistory] = useState<Array<{ role: string; content: string }>>([]);
+  const [isSending, setIsSending] = useState(false);
+  
+  // Get selected tasks from URL params
+  const selectedTasks = {
+    challenges: searchParams.get("challenges") === "true",
+    questions: searchParams.get("questions") === "true",
+    cases: searchParams.get("cases") === "true",
+  };
+  
+  // Build dynamic analysis steps based on selected tasks
+  // Value propositions depend on challenges, so show if challenges is selected
+  const analysisSteps = [
+    { id: "rfp_analyzer", label: "Analyzing RFP Document", workflowStep: "rfp_analyzer" },
+    ...(selectedTasks.challenges ? [{ id: "challenges", label: "Extracting Business Challenges", workflowStep: "challenge_extractor" }] : []),
+    ...(selectedTasks.challenges ? [{ id: "value_props", label: "Generating Value Propositions", workflowStep: "value_proposition" }] : []),
+    ...(selectedTasks.questions ? [{ id: "questions", label: "Creating Discovery Questions", workflowStep: "discovery_question" }] : []),
+    ...(selectedTasks.cases ? [{ id: "cases", label: "Matching Case Studies", workflowStep: "case_study_matcher" }] : []),
+  ];
+
+  const { data: insights, isLoading, error, refetch } = useQuery({
+    queryKey: ["insights", projectId],
+    queryFn: async () => {
+      try {
+        return await apiClient.getInsights(projectId);
+      } catch (err: any) {
+        // Silently handle 404s - they're expected when insights don't exist yet
+        if (err instanceof Error && err.message.includes('404')) {
+          return null;
+        }
+        throw err;
+      }
+    },
+    enabled: !!projectId,
+    retry: false,
+    throwOnError: false, // Don't throw errors since 404 is expected
+    refetchInterval: (query) => {
+      // Stop polling if there's an error (not 404) - prevents infinite loop on 500 errors
+      if (query.state.error) {
+        const errorMessage = query.state.error?.message || '';
+        // Only stop if it's not a 404 error
+        if (!errorMessage.includes('404')) {
+          console.error('Stopping polling due to error:', errorMessage);
+          return false;
+        }
+      }
+      
+      // Poll every 3 seconds if insights don't exist yet
+      const data = query.state.data;
+      if (!data || !data.executive_summary) {
+        return 3000; // Poll every 3 seconds
+      }
+      return false; // Stop polling once we have data
+    },
+  });
+
+  // Track if we're waiting for analysis
+  // Check both insights and workflow status to determine if we're still analyzing
+  const hasInsights = insights && (insights.executive_summary || insights.challenges || insights.proposal_draft);
+  
+  // Poll for workflow status to show dynamic progress
+  const { data: workflowStatus } = useQuery({
+    queryKey: ["workflow-status", projectId],
+    queryFn: () => apiClient.getWorkflowStatus(projectId),
+    enabled: !!projectId && !hasInsights, // Only poll if we don't have insights yet
+    refetchInterval: (query) => {
+      // Stop polling if workflow is completed
+      const status = query.state.data?.status;
+      if (status === "completed" || status === "error") {
+        return false;
+      }
+      return 2000; // Poll every 2 seconds while analyzing
+    },
+    retry: false,
+  });
+  
+  // Determine if we're analyzing based on both insights and workflow status
+  const isAnalyzing = !!projectId && !hasInsights && 
+                     (workflowStatus?.status === "running" || 
+                      workflowStatus?.status === "pending" || 
+                      workflowStatus?.status === "not_started" ||
+                      !workflowStatus);
+  
+  // Check for workflow errors
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+  
+  // Update error state when workflow status changes
+  useEffect(() => {
+    if (workflowStatus?.status === "error" || workflowStatus?.status === "failed") {
+      const errors = workflowStatus.errors || [];
+      setWorkflowError(errors.length > 0 ? errors[0] : "Workflow failed");
+    } else if (workflowStatus?.status === "completed") {
+      setWorkflowError(null);
+      // Refetch insights when workflow completes
+      refetch();
+    }
+  }, [workflowStatus, refetch]);
+  
+  // If we've been loading for more than 5 minutes, show an error
+  const [loadStartTime] = useState(Date.now());
+  const loadDuration = Date.now() - loadStartTime;
+  const isStuck = isAnalyzing && loadDuration > 5 * 60 * 1000; // 5 minutes
+
+  const handleSendMessage = async () => {
+    if (!chatMessage.trim() || !projectId || isSending) return;
+
+    // Check RAG status before sending message
+    try {
+      const ragStatus = await apiClient.getRagStatus(projectId);
+      // RAG index is ready if documents are indexed (insights not required for chat)
+      if (!ragStatus.ready) {
+        toast.error("RAG index not ready. Please wait for documents to be indexed.");
+        return;
+      }
+    } catch (error: any) {
+      console.warn("Could not check RAG status:", error);
+      // Continue anyway as the chat endpoint will handle this
+    }
+
+    const userMessage = chatMessage.trim();
+    setChatMessage("");
+    
+    // Add user message to UI immediately (optimistic update)
+    setChatHistory(prev => [...prev, { role: "user", content: userMessage }]);
+    setIsSending(true);
+
+    try {
+      // Send conversation history WITHOUT the current user message
+      // The backend will add the current query separately
+      const response = await apiClient.chatWithRFP(projectId, userMessage, chatHistory);
+      
+      // Check if there was an error in the response
+      if (!response.success && response.error) {
+        toast.error(response.error);
+        // Remove the user message that was added optimistically
+        setChatHistory(prev => prev.slice(0, -1));
+        setIsSending(false);
+        return;
+      }
+      
+      // Backend returns 'answer' field
+      const assistantMessage = response.answer || response.response || "Sorry, I couldn't process that request.";
+      
+      // Add assistant response to the history
+      // Use functional update to ensure we have the latest state (including the optimistic user message)
+      setChatHistory(prev => {
+        // The user message should already be in the history from the optimistic update
+        // Just add the assistant response
+        return [...prev, { role: "assistant", content: assistantMessage }];
+      });
+    } catch (error: any) {
+      console.error("Chat error:", error);
+      toast.error(error.message || "Failed to send message");
+      // Remove the user message that was added optimistically
+      setChatHistory(prev => prev.slice(0, -1));
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const [selectedCaseStudyIds, setSelectedCaseStudyIds] = useState<Set<number>>(new Set());
+  const [viewingCaseStudy, setViewingCaseStudy] = useState<any | null>(null);
+  const [isViewDialogOpen, setIsViewDialogOpen] = useState(false);
+  const queryClient = useQueryClient();
+
+  // Fetch RFP documents for the project
+  const { data: rfpDocuments } = useQuery({
+    queryKey: ["rfp-documents", projectId],
+    queryFn: () => apiClient.getProjectRFPDocuments(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+
+  const firstRfpDocumentId = rfpDocuments && rfpDocuments.length > 0 ? rfpDocuments[0].id : null;
+
+  // Fetch Go/No-Go Analysis
+  const { data: goNoGoAnalysis, refetch: refetchGoNoGo } = useQuery({
+    queryKey: ["go-no-go", projectId],
+    queryFn: () => apiClient.getGoNoGoAnalysis(projectId),
+    enabled: !!projectId,
+    retry: false,
+    throwOnError: false,
+  });
+
+  // Fetch Battle Cards
+  const { data: battleCardsData, refetch: refetchBattleCards } = useQuery({
+    queryKey: ["battle-cards", projectId],
+    queryFn: () => apiClient.getBattleCards(projectId),
+    enabled: !!projectId,
+    retry: false,
+    throwOnError: false,
+  });
+
+  // Go/No-Go Analysis mutation
+  const goNoGoMutation = useMutation({
+    mutationFn: () => {
+      if (!firstRfpDocumentId) {
+        throw new Error("No RFP document found. Please upload an RFP first.");
+      }
+      return apiClient.analyzeGoNoGo(projectId, firstRfpDocumentId);
+    },
+    onSuccess: () => {
+      toast.success("Go/No-Go analysis completed!");
+      refetchGoNoGo();
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Failed to run Go/No-Go analysis");
+    },
+  });
+
+  // Battle Cards mutation
+  const battleCardsMutation = useMutation({
+    mutationFn: () => {
+      if (!firstRfpDocumentId) {
+        throw new Error("No RFP document found. Please upload an RFP first.");
+      }
+      return apiClient.analyzeBattleCards(projectId, firstRfpDocumentId);
+    },
+    onSuccess: () => {
+      toast.success("Battle cards analysis completed!");
+      refetchBattleCards();
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Failed to analyze battle cards");
+    },
+  });
+
+  const handleGoNoGoAnalyze = async () => {
+    goNoGoMutation.mutate();
+  };
+
+  const handleBattleCardsAnalyze = async () => {
+    battleCardsMutation.mutate();
+  };
+
+  if (!projectId) {
+    return (
+      <DashboardLayout>
+        <div className="flex h-full items-center justify-center">
+          <Card className="p-6">
+            <p className="text-muted-foreground">No project selected. Please select a project from the dashboard.</p>
+            <Button onClick={() => navigate("/dashboard")} className="mt-4">
+              Go to Dashboard
+            </Button>
+          </Card>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  // Show error if there's a non-404 error
+  if (error && !error.message?.includes('404')) {
+    return (
+      <DashboardLayout>
+        <div className="flex h-full items-center justify-center p-6">
+          <Card className="border-border/40 bg-gradient-card p-8 backdrop-blur-sm w-full max-w-2xl">
+            <div className="flex flex-col items-center justify-center space-y-6">
+              <div className="text-center space-y-4">
+                <h2 className="font-heading text-2xl font-bold text-destructive">Error Loading Insights</h2>
+                <p className="text-muted-foreground">
+                  {error.message || "An error occurred while loading insights"}
+                </p>
+                <div className="flex gap-2 justify-center">
+                  <Button 
+                    variant="outline" 
+                    onClick={async () => {
+                      await refetch();
+                    }}
+                  >
+                    Retry
+                  </Button>
+                  <Button 
+                    variant="outline"
+                    onClick={() => navigate("/dashboard")}
+                  >
+                    Go to Dashboard
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  // Show analyzing loader if insights are being generated
+  if (isAnalyzing) {
+    return (
+      <DashboardLayout>
+        <div className="flex h-full items-center justify-center p-6">
+          <Card className="border-border/40 bg-gradient-card p-8 backdrop-blur-sm w-full max-w-2xl">
+            <div className="flex flex-col items-center justify-center space-y-6">
+              {/* Animated Sparkles Icon */}
+              <div className="relative">
+                <div className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
+                <div className="relative flex h-20 w-20 items-center justify-center rounded-full bg-gradient-primary shadow-glass">
+                  <Sparkles className="h-10 w-10 text-primary-foreground animate-pulse" />
+                </div>
+              </div>
+
+              {/* Title */}
+              <div className="text-center space-y-2">
+                <h2 className="font-heading text-2xl font-bold">Analyzing Your RFP</h2>
+                <p className="text-muted-foreground">
+                  Our AI is extracting insights, identifying challenges, and generating recommendations...
+                </p>
+              </div>
+
+              {/* Progress Steps */}
+              <WorkflowStepLoader 
+                workflowStatus={workflowStatus} 
+                steps={analysisSteps}
+              />
+
+              {/* Loading Indicator */}
+              <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>This may take 2-3 minutes</span>
+                </div>
+                {isStuck && (
+                  <div className="mt-4 w-full rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-4 text-center space-y-3">
+                    <p className="text-sm text-yellow-600">
+                      Analysis is taking longer than expected. The workflow might not have started or encountered an error.
+                    </p>
+                    <div className="flex gap-2 justify-center">
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={async () => {
+                          toast.info("Checking status...");
+                          await refetch();
+                        }}
+                      >
+                        Check Status
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            toast.info("Please check the browser console and backend logs for errors");
+                            console.log("Project ID:", projectId);
+                            console.log("Check backend console for workflow execution logs");
+                          } catch (err) {
+                            console.error("Error:", err);
+                          }
+                        }}
+                      >
+                        View Logs
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </Card>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  if (!insights && !isAnalyzing) {
+    return (
+      <DashboardLayout>
+        <div className="flex h-full items-center justify-center p-6">
+          <Card className="border-border/40 bg-gradient-card p-8 backdrop-blur-sm max-w-md">
+            <div className="text-center space-y-4">
+              <div className="flex justify-center">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted">
+                  <Sparkles className="h-8 w-8 text-muted-foreground" />
+                </div>
+              </div>
+              <div>
+                <h2 className="font-heading text-xl font-bold mb-2">No Insights Found</h2>
+                <p className="text-muted-foreground text-sm mb-4">
+                  Insights haven't been generated for this project yet. The workflow might not have started or may have failed.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <Button 
+                  onClick={() => navigate("/new-project")} 
+                  className="bg-gradient-primary"
+                >
+                  Create New Project
+                </Button>
+                <Button 
+                  variant="outline"
+                  onClick={() => {
+                    console.log("Project ID:", projectId);
+                    console.log("Check backend console for workflow execution logs");
+                    toast.info("Check the browser console and backend logs");
+                  }}
+                >
+                  Check Logs
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  const challenges = insights.challenges || [];
+  const valueProps = insights.value_propositions || [];
+  const discoveryQuestions = insights.discovery_questions || {};
+  const matchingCaseStudies = insights.matching_case_studies || [];
+  const rfpSummary = insights.executive_summary || "";
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6 sm:space-y-8">
+        {/* Header */}
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary/10 via-primary/5 to-background p-6 sm:p-8 border border-border/40">
+          <div className="relative z-10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h1 className="mb-2 font-heading text-2xl sm:text-3xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+                AI Insights
+              </h1>
+              <p className="text-sm sm:text-base text-muted-foreground">Project ID: {projectId}</p>
+            </div>
+            <div className="flex gap-3">
+              <Button 
+                variant="gradient"
+                className="shadow-md hover:shadow-lg" 
+                onClick={() => {
+                  const selectedIds = Array.from(selectedCaseStudyIds);
+                  const params = new URLSearchParams();
+                  params.set('project_id', projectId.toString());
+                  if (selectedIds.length > 0) {
+                    params.set('selected_case_study_ids', selectedIds.join(','));
+                  }
+                  navigate(`/proposal?${params.toString()}`);
+                }}
+              >
+                <FileText className="mr-2 h-4 w-4" />
+                Generate Proposal
+              </Button>
+            </div>
+          </div>
+          <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-3xl"></div>
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-3">
+          <div className="lg:col-span-2 space-y-6">
+            <Tabs defaultValue="summary" className="w-full">
+              <TabsList className="grid w-full grid-cols-5 bg-muted/50">
+                <TabsTrigger value="summary">Summary</TabsTrigger>
+                <TabsTrigger value="challenges">Challenges</TabsTrigger>
+                <TabsTrigger value="questions">Questions</TabsTrigger>
+                <TabsTrigger value="cases">Case Studies</TabsTrigger>
+                <TabsTrigger value="go-no-go">Go/No-Go</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="summary" className="mt-6">
+                <Card className="border-border/40 bg-card/80 backdrop-blur-sm p-4 sm:p-6 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="mb-6 flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-primary/10 to-primary/5">
+                      <Sparkles className="h-5 w-5 text-primary" />
+                    </div>
+                    <h2 className="font-heading text-lg sm:text-xl font-semibold">Executive Summary</h2>
+                  </div>
+                  <div className="space-y-4">
+                    {rfpSummary ? (
+                      <div className="rounded-lg bg-background/40 p-5 border border-border/30">
+                        <MarkdownText 
+                          content={typeof rfpSummary === 'string' ? rfpSummary : JSON.stringify(rfpSummary)} 
+                          className="text-foreground/90"
+                        />
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground italic">No summary available yet. Run analysis to generate insights.</p>
+                    )}
+                  </div>
+                </Card>
+
+                <Card className="mt-6 border-border/40 bg-card/80 backdrop-blur-sm p-4 sm:p-6 shadow-sm hover:shadow-md transition-shadow">
+                  <h2 className="mb-6 font-heading text-lg sm:text-xl font-semibold">Value Propositions</h2>
+                  <div className="space-y-4">
+                    {valueProps.length > 0 ? (
+                      valueProps.map((prop: any, index: number) => {
+                        const propText = typeof prop === 'string' ? prop : prop.text || JSON.stringify(prop);
+                        return (
+                          <div 
+                            key={index} 
+                            className="group flex items-start gap-4 rounded-lg bg-background/40 p-5 border border-border/30 transition-all hover:border-primary/30 hover:bg-background/50"
+                          >
+                            <div className="mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                              {index + 1}
+                            </div>
+                            <div className="flex-1">
+                              <MarkdownText 
+                                content={propText} 
+                                className="text-sm text-foreground/90 leading-relaxed"
+                              />
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <p className="text-sm text-muted-foreground italic">No value propositions identified yet.</p>
+                    )}
+                  </div>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="challenges" className="mt-6">
+                <Card className="border-border/40 bg-card/80 backdrop-blur-sm p-4 sm:p-6 shadow-sm hover:shadow-md transition-shadow">
+                  <h2 className="mb-6 font-heading text-lg sm:text-xl font-semibold">Business Challenges Identified</h2>
+                  <div className="space-y-4">
+                    {challenges.length > 0 ? (
+                      challenges.map((challenge: any, index: number) => {
+                        // Handle different challenge formats
+                        let challengeDescription = "";
+                        let challengeType = "";
+                        let challengeImpact = "";
+                        let challengeCategory = "";
+                        let solutionDirection = "";
+                        let recommendation = null;
+                        
+                        if (typeof challenge === 'string') {
+                          challengeDescription = challenge;
+                        } else if (typeof challenge === 'object') {
+                          challengeDescription = challenge.description || challenge.text || challenge.challenge || "";
+                          challengeType = challenge.type || "";
+                          challengeImpact = challenge.impact || "";
+                          challengeCategory = challenge.category || "";
+                          solutionDirection = challenge.solution_direction || challenge.recommendation || "";
+                          recommendation = challenge.recommendation || null;
+                        }
+                        
+                        return (
+                          <div 
+                            key={index} 
+                            className="group flex gap-4 rounded-lg bg-background/40 p-5 border border-border/30 transition-all hover:border-primary/30 hover:bg-background/50"
+                          >
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 font-semibold text-primary">
+                              {index + 1}
+                            </div>
+                            <div className="flex-1 space-y-3">
+                              {/* Challenge Description */}
+                              {challengeDescription && (
+                                <div className="text-foreground/90">
+                                  <MarkdownText 
+                                    content={challengeDescription} 
+                                    className="text-sm font-medium leading-relaxed"
+                                  />
+                                </div>
+                              )}
+                              
+                              {/* Challenge Metadata */}
+                              {(challengeType || challengeImpact || challengeCategory) && (
+                                <div className="flex flex-wrap gap-2">
+                                  {challengeType && (
+                                    <Badge variant="secondary" className="text-xs">
+                                      Type: {challengeType}
+                                    </Badge>
+                                  )}
+                                  {challengeImpact && (
+                                    <Badge variant={challengeImpact === 'High' ? 'destructive' : challengeImpact === 'Medium' ? 'default' : 'secondary'} className="text-xs">
+                                      Impact: {challengeImpact}
+                                    </Badge>
+                                  )}
+                                  {challengeCategory && (
+                                    <Badge variant="outline" className="text-xs">
+                                      {challengeCategory}
+                                    </Badge>
+                                  )}
+                                </div>
+                              )}
+                              
+                              {/* Solution Direction */}
+                              {solutionDirection && !recommendation && (
+                                <div className="mt-3 rounded-lg bg-primary/5 border-l-4 border-primary/30 p-3">
+                                  <p className="text-xs font-semibold text-primary mb-1.5">Solution Direction</p>
+                                  <MarkdownText 
+                                    content={solutionDirection} 
+                                    className="text-sm text-foreground/80"
+                                  />
+                                </div>
+                              )}
+                              
+                              {/* AI Recommendation */}
+                              {recommendation && (
+                                <div className="mt-3 rounded-lg bg-primary/5 border-l-4 border-primary/30 p-3">
+                                  <p className="text-xs font-semibold text-primary mb-1.5">AI Recommendation</p>
+                                  <MarkdownText 
+                                    content={recommendation} 
+                                    className="text-sm text-foreground/80"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <p className="text-sm text-muted-foreground italic">No challenges identified yet.</p>
+                    )}
+                  </div>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="questions" className="mt-6">
+                <Card className="border-border/40 bg-card/80 backdrop-blur-sm p-4 sm:p-6 shadow-sm hover:shadow-md transition-shadow">
+                  <h2 className="mb-6 font-heading text-lg sm:text-xl font-semibold">Discovery Questions</h2>
+                  {typeof discoveryQuestions === 'object' && Object.keys(discoveryQuestions).length > 0 ? (
+                    <Accordion type="single" collapsible className="w-full">
+                      {Object.entries(discoveryQuestions).map(([category, questions]: [string, any], index) => (
+                        <AccordionItem key={index} value={`item-${index}`} className="border-border/30">
+                          <AccordionTrigger className="hover:no-underline py-4 font-semibold text-foreground">
+                            <span>{category}</span>
+                          </AccordionTrigger>
+                          <AccordionContent className="pt-2">
+                            <ul className="space-y-3">
+                              {(Array.isArray(questions) ? questions : []).map((question: any, qIndex: number) => {
+                                const questionText = typeof question === 'string' ? question : question.text || JSON.stringify(question);
+                                return (
+                                  <li key={qIndex} className="flex items-start gap-3 rounded-lg bg-background/30 p-3 border border-border/20">
+                                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                                    <div className="flex-1">
+                                      <MarkdownText 
+                                        content={questionText} 
+                                        className="text-sm text-foreground/90 leading-relaxed"
+                                      />
+                                    </div>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </AccordionContent>
+                        </AccordionItem>
+                      ))}
+                    </Accordion>
+                  ) : (
+                    <p className="text-sm text-muted-foreground italic">No discovery questions generated yet.</p>
+                  )}
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="cases" className="mt-6">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="font-heading text-xl font-semibold">Case Studies</h2>
+                </div>
+                {matchingCaseStudies.length > 0 ? (
+                  matchingCaseStudies.map((caseStudy: any, index: number) => {
+                    const caseStudyId = caseStudy.id || index;
+                    const isSelected = selectedCaseStudyIds.has(caseStudyId);
+                    const matchPercentage = caseStudy.relevance_score 
+                      ? Math.round((caseStudy.relevance_score || 0) * 100)
+                      : caseStudy.similarity_score 
+                      ? Math.round((caseStudy.similarity_score || 0) * 100)
+                      : null;
+                    
+                    return (
+                      <Card 
+                        key={caseStudyId} 
+                        className={`border-border/40 bg-gradient-card p-6 backdrop-blur-sm transition-all hover:-translate-y-1 hover:shadow-glass hover:border-primary/30 ${isSelected ? 'ring-2 ring-primary' : ''}`}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1 space-y-3">
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-xs font-semibold text-primary">
+                                {index + 1}
+                              </div>
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2">
+                                  <h3 className="font-heading text-lg font-semibold text-foreground">
+                                    {caseStudy.title || caseStudy.name || `Case Study ${index + 1}`}
+                                  </h3>
+                                  {matchPercentage !== null && (
+                                    <Badge variant="outline" className="text-xs">
+                                      {matchPercentage}% Match
+                                    </Badge>
+                                  )}
+                                </div>
+                                {caseStudy.creator_name && (
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    Created by {caseStudy.creator_name}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2 ml-11">
+                              {caseStudy.industry && (
+                                <Badge variant="secondary">{caseStudy.industry}</Badge>
+                              )}
+                            </div>
+                            {caseStudy.impact && (
+                              <div className="ml-11">
+                                <p className="text-xs font-semibold text-primary mb-1">Impact</p>
+                                <div className="text-sm text-foreground/80">
+                                  <MarkdownText 
+                                    content={typeof caseStudy.impact === 'string' ? caseStudy.impact : JSON.stringify(caseStudy.impact)} 
+                                    className="text-sm"
+                                  />
+                                </div>
+                              </div>
+                            )}
+                            {caseStudy.description && (
+                              <div className="ml-11 mt-2">
+                                <MarkdownText 
+                                  content={typeof caseStudy.description === 'string' ? caseStudy.description : JSON.stringify(caseStudy.description)} 
+                                  className="text-sm text-foreground/70 line-clamp-2"
+                                />
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end gap-2 shrink-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-muted-foreground">Include in proposal</span>
+                              <Switch
+                                checked={isSelected}
+                                onCheckedChange={(checked) => {
+                                  const newSet = new Set(selectedCaseStudyIds);
+                                  if (checked) {
+                                    newSet.add(caseStudyId);
+                                  } else {
+                                    newSet.delete(caseStudyId);
+                                  }
+                                  setSelectedCaseStudyIds(newSet);
+                                }}
+                              />
+                            </div>
+                            <Button 
+                              variant="outline" 
+                              size="sm"
+                              onClick={() => {
+                                setViewingCaseStudy(caseStudy);
+                                setIsViewDialogOpen(true);
+                              }}
+                            >
+                              <Eye className="mr-2 h-4 w-4" />
+                              View Details
+                            </Button>
+                          </div>
+                        </div>
+                      </Card>
+                    );
+                  })
+                ) : (
+                  <p className="text-sm text-muted-foreground italic">No matching case studies found yet.</p>
+                )}
+                
+                {/* View Case Study Details Dialog */}
+                <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>
+                  <DialogContent className="sm:max-w-[700px] max-h-[90vh] flex flex-col">
+                    <DialogHeader>
+                      <DialogTitle>Case Study Details</DialogTitle>
+                      <DialogDescription>
+                        View complete information about this case study.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <ScrollArea className="flex-1 pr-4">
+                      {viewingCaseStudy && (
+                        <div className="space-y-4 py-4">
+                          <div className="space-y-2">
+                            <Label className="text-sm font-semibold">Title</Label>
+                            <p className="text-sm">{viewingCaseStudy.title || viewingCaseStudy.name || "N/A"}</p>
+                          </div>
+                          <div className="flex gap-4">
+                            <div className="space-y-2 flex-1">
+                              <Label className="text-sm font-semibold">Industry</Label>
+                              <Badge variant="secondary" className="bg-primary/10 text-primary">
+                                {viewingCaseStudy.industry || "N/A"}
+                              </Badge>
+                            </div>
+                            {(viewingCaseStudy.relevance_score || viewingCaseStudy.similarity_score) && (
+                              <div className="space-y-2 flex-1">
+                                <Label className="text-sm font-semibold">Match Score</Label>
+                                <Badge variant="outline" className="text-sm">
+                                  {Math.round(((viewingCaseStudy.relevance_score || viewingCaseStudy.similarity_score || 0) * 100))}% Match
+                                </Badge>
+                              </div>
+                            )}
+                          </div>
+                          {viewingCaseStudy.creator_name && (
+                            <div className="space-y-2">
+                              <Label className="text-sm font-semibold">Created By</Label>
+                              <p className="text-sm text-muted-foreground">{viewingCaseStudy.creator_name}</p>
+                            </div>
+                          )}
+                          {viewingCaseStudy.impact && (
+                            <div className="space-y-2">
+                              <Label className="text-sm font-semibold">Impact</Label>
+                              <div className="rounded-lg bg-primary/5 p-3">
+                                <MarkdownText 
+                                  content={typeof viewingCaseStudy.impact === 'string' ? viewingCaseStudy.impact : JSON.stringify(viewingCaseStudy.impact)}
+                                  className="text-sm font-semibold text-primary"
+                                />
+                              </div>
+                            </div>
+                          )}
+                          {viewingCaseStudy.description && (
+                            <div className="space-y-2">
+                              <Label className="text-sm font-semibold">Description</Label>
+                              <div className="text-sm text-muted-foreground">
+                                <MarkdownText 
+                                  content={typeof viewingCaseStudy.description === 'string' ? viewingCaseStudy.description : JSON.stringify(viewingCaseStudy.description)}
+                                  className="whitespace-pre-wrap"
+                                />
+                              </div>
+                            </div>
+                          )}
+                          {viewingCaseStudy.project_description && (
+                            <div className="space-y-2">
+                              <Label className="text-sm font-semibold">Project Description</Label>
+                              <div className="text-sm text-muted-foreground">
+                                <MarkdownText 
+                                  content={viewingCaseStudy.project_description}
+                                  className="whitespace-pre-wrap"
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </ScrollArea>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setIsViewDialogOpen(false)}>
+                        Close
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </TabsContent>
+
+              <TabsContent value="go-no-go" className="mt-6">
+                <GoNoGoAnalysis
+                  projectId={projectId}
+                  rfpDocumentId={firstRfpDocumentId}
+                  icpProfileId={undefined}
+                  onAnalyze={handleGoNoGoAnalyze}
+                  analysis={goNoGoAnalysis || undefined}
+                  isLoading={goNoGoMutation.isPending}
+                  error={goNoGoMutation.error?.message || null}
+                />
+              </TabsContent>
+            </Tabs>
+          </div>
+
+          {/* Sidebar */}
+          <div className="space-y-6">
+            {/* Battle Cards */}
+            {battleCardsData && battleCardsData.battle_cards && battleCardsData.battle_cards.length > 0 ? (
+              <div>
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="font-semibold text-sm">Battle Cards</h3>
+                  <Button 
+                    onClick={handleBattleCardsAnalyze} 
+                    disabled={battleCardsMutation.isPending || !firstRfpDocumentId}
+                    variant="outline"
+                    size="sm"
+                  >
+                    {battleCardsMutation.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      "Re-analyze"
+                    )}
+                  </Button>
+                </div>
+                <BattleCardSidebar
+                  projectId={projectId}
+                  battleCards={battleCardsData.battle_cards}
+                />
+              </div>
+            ) : (
+              <Card className="border-border/40 bg-card/80 backdrop-blur-sm">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Shield className="h-4 w-4 text-primary" />
+                    Battle Cards
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Analyze competitors mentioned in the RFP to generate battle cards with weaknesses and recommendations.
+                  </p>
+                  <Button 
+                    onClick={handleBattleCardsAnalyze} 
+                    disabled={battleCardsMutation.isPending || !firstRfpDocumentId}
+                    className="w-full"
+                    variant="outline"
+                  >
+                    {battleCardsMutation.isPending ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <Shield className="mr-2 h-4 w-4" />
+                        Analyze Battle Cards
+                      </>
+                    )}
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Chat Panel */}
+            <Card className="border-border/40 bg-gradient-card backdrop-blur-sm sticky top-6">
+              <div className="border-b border-border/40 p-4">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="h-5 w-5 text-primary" />
+                  <h3 className="font-heading font-semibold">Chat with RFP</h3>
+                </div>
+              </div>
+              <ScrollArea className="h-[400px] p-4">
+                <div className="space-y-4">
+                  {chatHistory.length === 0 && (
+                    <div className="flex gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                        <Sparkles className="h-4 w-4 text-primary" />
+                      </div>
+                      <div className="flex-1 rounded-lg bg-background/50 p-4 text-sm border border-border/30">
+                        <MarkdownText 
+                          content="Hi! I can help you understand the RFP better. Ask me anything about requirements, timeline, or client needs." 
+                          className="text-foreground/90"
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {chatHistory.map((msg, index) => (
+                    <div key={index} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                      {msg.role === 'assistant' && (
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                          <Sparkles className="h-4 w-4 text-primary" />
+                        </div>
+                      )}
+                      <div className={`flex-1 rounded-lg p-4 text-sm ${msg.role === 'user' ? 'bg-primary/10 text-primary' : 'bg-background/50 border border-border/30'}`}>
+                        <MarkdownText 
+                          content={msg.content} 
+                          className={msg.role === 'user' ? 'text-primary' : 'text-foreground/90'}
+                        />
+                      </div>
+                      {msg.role === 'user' && (
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted">
+                          <span className="text-xs">You</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {isSending && (
+                    <div className="flex gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                        <Sparkles className="h-4 w-4 text-primary animate-pulse" />
+                      </div>
+                      <div className="flex-1 rounded-lg bg-background/50 p-3 text-sm">
+                        Thinking...
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+              <div className="border-t border-border/40 p-4">
+                <div className="flex gap-2">
+                  <Input 
+                    placeholder="Ask a question..." 
+                    className="bg-background/50" 
+                    value={chatMessage}
+                    onChange={(e) => setChatMessage(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage();
+                      }
+                    }}
+                    disabled={isSending}
+                  />
+                  <Button 
+                    size="icon" 
+                    className="bg-gradient-primary shrink-0"
+                    onClick={handleSendMessage}
+                    disabled={isSending || !chatMessage.trim()}
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </DashboardLayout>
+    );
+  }
