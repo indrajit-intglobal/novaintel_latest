@@ -121,18 +121,19 @@ async def lifespan(app: FastAPI):
     print("[INFO] Startup complete - server ready to accept requests")
     
     # Startup complete, yield control
+    # Note: CancelledError during shutdown is expected and will be handled by Starlette
     try:
         yield
-    except asyncio.CancelledError:
-        # Re-raise cancellation to allow proper cleanup
-        raise
     finally:
         # Shutdown cleanup - handle cancellation gracefully
         try:
-            print("[INFO] Shutting down...")
+            print("[INFO] Shutting down gracefully...")
         except (asyncio.CancelledError, KeyboardInterrupt):
-            # Suppress cancellation errors during shutdown
+            # Suppress cancellation errors during shutdown - they're expected
             pass
+        except Exception as e:
+            # Log but don't raise other exceptions during shutdown
+            print(f"[WARNING] Error during shutdown cleanup: {e}")
 
 
 app = FastAPI(

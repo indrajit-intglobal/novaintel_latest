@@ -67,6 +67,15 @@ export default function AdminChat() {
     if (data.message) {
       // If message is for currently selected conversation, add it to local state
       if (data.conversation_id === selectedConversation?.id) {
+        // Clear typing indicator for the sender when message is received
+        if (data.message.sender_id !== parseInt(user?.id || "0")) {
+          setTypingUsers((prev) => {
+            const newSet = new Set(prev);
+            newSet.delete(data.message!.sender_id);
+            return newSet;
+          });
+        }
+        
         setMessages((prev) => {
           // Check if message already exists to prevent duplicates
           const exists = prev.some(msg => msg.id === data.message!.id);
@@ -87,17 +96,24 @@ export default function AdminChat() {
             return true;
           });
           
-          return [...filtered, data.message!];
+          const updated = [...filtered, data.message!];
+          // Sort by created_at to ensure correct order
+          updated.sort((a, b) => 
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          );
+          return updated;
         });
         scrollToBottom();
       }
       
       // Always invalidate messages query for this conversation to ensure consistency
-      queryClient.invalidateQueries({ queryKey: ["messages", data.conversation_id] });
+      if (data.conversation_id) {
+        queryClient.invalidateQueries({ queryKey: ["messages", data.conversation_id] });
+      }
     }
     // Invalidate conversations to update unread counts and last message
     queryClient.invalidateQueries({ queryKey: ["conversations"] });
-  }, [selectedConversation?.id, queryClient, scrollToBottom]);
+  }, [selectedConversation?.id, queryClient, scrollToBottom, user?.id]);
 
   const handleTyping = useCallback((data: WebSocketMessage) => {
     if (data.conversation_id === selectedConversation?.id && data.user_id !== parseInt(user?.id || "0")) {

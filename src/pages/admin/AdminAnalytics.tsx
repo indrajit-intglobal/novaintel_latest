@@ -62,9 +62,10 @@ export default function AdminAnalytics() {
         );
     }
 
-    const { data: analytics, isLoading } = useQuery({
+    const { data: analytics, isLoading, error } = useQuery({
         queryKey: ["admin-analytics"],
         queryFn: () => apiClient.getAdminAnalytics(),
+        retry: 1,
     });
 
     if (isLoading) {
@@ -72,6 +73,34 @@ export default function AdminAnalytics() {
             <DashboardLayout>
                 <div className="flex items-center justify-center h-full">
                     <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+            </DashboardLayout>
+        );
+    }
+
+    if (error) {
+        return (
+            <DashboardLayout>
+                <div className="space-y-6 sm:space-y-8">
+                    <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary/10 via-primary/5 to-background p-6 sm:p-8 border border-border/40">
+                        <div className="relative z-10">
+                            <h1 className="mb-2 font-heading text-2xl sm:text-3xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+                                Analytics & Reports
+                            </h1>
+                            <p className="text-sm sm:text-base text-muted-foreground">Comprehensive insights and metrics</p>
+                        </div>
+                        <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-3xl"></div>
+                    </div>
+                    
+                    <Card className="p-6 sm:p-8">
+                        <div className="text-center">
+                            <XCircle className="h-12 w-12 mx-auto text-destructive mb-4" />
+                            <p className="text-lg font-semibold mb-2">Error loading analytics</p>
+                            <p className="text-sm text-muted-foreground">
+                                {error instanceof Error ? error.message : "Failed to fetch analytics data. Please try again later."}
+                            </p>
+                        </div>
+                    </Card>
                 </div>
             </DashboardLayout>
         );
@@ -92,7 +121,13 @@ export default function AdminAnalytics() {
                     </div>
                     
                     <Card className="p-6 sm:p-8">
-                        <p className="text-muted-foreground">No analytics data available</p>
+                        <div className="text-center">
+                            <BarChart3 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                            <p className="text-lg font-semibold mb-2">No analytics data available</p>
+                            <p className="text-sm text-muted-foreground">
+                                There is no data to display yet. Analytics will appear once you have proposals and projects in the system.
+                            </p>
+                        </div>
                     </Card>
                 </div>
             </DashboardLayout>

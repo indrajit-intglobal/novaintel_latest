@@ -218,6 +218,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int, token: str = No
                         # Prepare message response
                         message_response = {
                             "type": "message",
+                            "conversation_id": conversation_id,  # Add at top level for frontend
                             "message": {
                                 "id": new_message.id,
                                 "conversation_id": new_message.conversation_id,
@@ -245,7 +246,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int, token: str = No
                         if conversation_id and websocket.client_state.name == "CONNECTED":
                             typing_msg = {
                                 "type": "typing",
-                                "conversation_id": conversation_id,
+                                "conversation_id": conversation_id,  # Ensure it's at top level
                                 "user_id": user.id,
                                 "user_name": user.full_name,
                                 "is_typing": message_data.get("is_typing", True)
@@ -541,7 +542,8 @@ async def get_messages(
     ).order_by(Message.created_at.desc()).offset(skip).limit(limit).all()
     
     # Mark as read
-    participant.last_read_at = datetime.utcnow()
+    from utils.timezone import now_utc_from_ist
+    participant.last_read_at = now_utc_from_ist()
     db.query(Message).filter(
         and_(
             Message.conversation_id == conversation_id,

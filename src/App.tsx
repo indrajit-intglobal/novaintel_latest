@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { PublicRoute } from "@/components/PublicRoute";
@@ -25,11 +25,8 @@ import Chat from "./pages/Chat";
 import ICPProfiles from "./pages/ICPProfiles";
 import WinLossData from "./pages/WinLossData";
 import AdminDashboard from "./pages/AdminDashboard";
-import AdminProposals from "./pages/admin/AdminProposals";
 import AdminUsers from "./pages/admin/AdminUsers";
-import AdminProjects from "./pages/admin/AdminProjects";
 import AdminAnalytics from "./pages/admin/AdminAnalytics";
-import AdminCaseStudies from "./pages/admin/AdminCaseStudies";
 import AdminChat from "./pages/admin/AdminChat";
 import NotFound from "./pages/NotFound";
 
@@ -168,7 +165,7 @@ const App = () => (
               path="/admin/proposals"
               element={
                 <ProtectedRoute>
-                  <AdminProposals />
+                  <Navigate to="/admin?tab=proposals" replace />
                 </ProtectedRoute>
               }
             />
@@ -184,7 +181,7 @@ const App = () => (
               path="/admin/projects"
               element={
                 <ProtectedRoute>
-                  <AdminProjects />
+                  <Navigate to="/admin?tab=projects-case-studies&view=projects" replace />
                 </ProtectedRoute>
               }
             />
@@ -200,7 +197,7 @@ const App = () => (
               path="/admin/case-studies"
               element={
                 <ProtectedRoute>
-                  <AdminCaseStudies />
+                  <Navigate to="/admin?tab=projects-case-studies&view=case-studies" replace />
                 </ProtectedRoute>
               }
             />

@@ -1,7 +1,7 @@
 import { LayoutDashboard, PlusCircle, Sparkles, FileText, FolderKanban, Settings, Lightbulb, Users, TrendingUp, HelpCircle, LogOut, Shield, BarChart3, Briefcase, MessageCircle, Target, TrendingDown } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useAuth } from "@/contexts/AuthContext";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   Sidebar,
   SidebarContent,
@@ -31,12 +31,9 @@ const workspaceItems = [
 ];
 
 const adminItems = [
-  { name: "Dashboard", icon: LayoutDashboard, route: "/admin", description: "Overview" },
-  { name: "Proposals", icon: FileText, route: "/admin/proposals", description: "Review & approve" },
+  { name: "Dashboard", icon: LayoutDashboard, route: "/admin?tab=overview", description: "Overview" },
   { name: "Users", icon: Users, route: "/admin/users", description: "User management" },
-  { name: "Projects", icon: Briefcase, route: "/admin/projects", description: "All projects" },
   { name: "Analytics", icon: BarChart3, route: "/admin/analytics", description: "Reports & metrics" },
-  { name: "Case Studies", icon: FolderKanban, route: "/admin/case-studies", description: "Manage portfolio" },
   { name: "Chat", icon: MessageCircle, route: "/admin/chat", description: "Monitor conversations" },
 ];
 
@@ -48,43 +45,67 @@ export function AppSidebar() {
   const { open } = useSidebar();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleLogout = async () => {
     await logout();
     navigate("/login");
   };
 
-  const MenuItem = ({ item }: { item: typeof mainMenuItems[0] }) => (
-    <SidebarMenuItem>
-      <SidebarMenuButton asChild className="h-auto py-0">
-        <NavLink
-          to={item.route}
-          end={true}
-          className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all duration-200 hover:bg-accent/50 hover:shadow-sm group"
-          activeClassName="bg-gradient-to-r from-primary/15 to-primary/5 text-primary font-medium border-l-2 border-primary shadow-sm"
-        >
-          <div className="flex items-center justify-center w-9 h-9 rounded-md bg-muted/50 group-hover:bg-primary/10 transition-all duration-200 group-hover:scale-110">
-            <item.icon className="h-5 w-5" />
-          </div>
-          {open && (
-            <div className="flex-1 flex items-center justify-between">
-              <div className="flex flex-col">
-                <span className="font-medium text-sm">{item.name}</span>
-                {item.description && (
-                  <span className="text-xs text-muted-foreground">{item.description}</span>
+  const isAdminRouteActive = (route: string) => {
+    if (route === "/admin?tab=overview") {
+      return location.pathname === "/admin" && (!location.search || location.search === "?tab=overview" || location.search === "");
+    }
+    if (route.includes("?tab=")) {
+      const [path, query] = route.split("?");
+      const params = new URLSearchParams(query);
+      const currentParams = new URLSearchParams(location.search);
+      return location.pathname === path && params.get("tab") === currentParams.get("tab") && 
+             (!params.get("view") || params.get("view") === currentParams.get("view"));
+    }
+    return location.pathname === route;
+  };
+
+  type MenuItemType = typeof mainMenuItems[0] | typeof adminItems[0] | typeof workspaceItems[0] | typeof settingsItems[0];
+  
+  const MenuItem = ({ item }: { item: MenuItemType }) => {
+    const isActive = item.route.startsWith("/admin") 
+      ? isAdminRouteActive(item.route)
+      : location.pathname === item.route;
+    
+    return (
+      <SidebarMenuItem>
+        <SidebarMenuButton asChild className="h-auto py-0">
+          <NavLink
+            to={item.route}
+            end={true}
+            className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all duration-200 hover:bg-accent/50 hover:shadow-sm group ${
+              isActive ? "bg-gradient-to-r from-primary/15 to-primary/5 text-primary font-medium border-l-2 border-primary shadow-sm" : ""
+            }`}
+          >
+            <div className="flex items-center justify-center w-9 h-9 rounded-md bg-muted/50 group-hover:bg-primary/10 transition-all duration-200 group-hover:scale-110">
+              <item.icon className="h-5 w-5" />
+            </div>
+            {open && (
+              <div className="flex-1 flex items-center justify-between">
+                <div className="flex flex-col">
+                  <span className="font-medium text-sm">{item.name}</span>
+                  {item.description && (
+                    <span className="text-xs text-muted-foreground">{item.description}</span>
+                  )}
+                </div>
+                {item.badge && (
+                  <Badge variant="secondary" className="ml-auto text-xs px-1.5 py-0.5 bg-primary/10 text-primary border-0 shadow-sm">
+                    {item.badge}
+                  </Badge>
                 )}
               </div>
-              {item.badge && (
-                <Badge variant="secondary" className="ml-auto text-xs px-1.5 py-0.5 bg-primary/10 text-primary border-0 shadow-sm">
-                  {item.badge}
-                </Badge>
-              )}
-            </div>
-          )}
-        </NavLink>
-      </SidebarMenuButton>
-    </SidebarMenuItem>
-  );
+            )}
+          </NavLink>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  };
 
   return (
     <Sidebar className="border-r border-border/40 bg-gradient-to-b from-background/95 to-muted/20 backdrop-blur-sm">
@@ -193,3 +214,5 @@ export function AppSidebar() {
     </Sidebar>
   );
 }
+
+export default AppSidebar;

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
@@ -1113,6 +1114,276 @@ async def admin_dashboard(
     proposals = query.order_by(desc(Proposal.submitted_at).nullslast()).all()
     return proposals
 
+@router.get("/admin/analytics")
+async def admin_analytics(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get comprehensive analytics for admin dashboard."""
+    try:
+        MANAGER_ROLE = "pre_sales_manager"
+        
+        if current_user.role != MANAGER_ROLE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+        
+        from sqlalchemy import func, case
+        from models.project import Project, ProjectStatus
+        from models.insights import Insights
+        
+        # Proposal statistics
+        total_proposals = db.query(func.count(Proposal.id)).scalar() or 0
+        pending_proposals = db.query(func.count(Proposal.id)).filter(Proposal.status == "pending_approval").scalar() or 0
+        approved_proposals = db.query(func.count(Proposal.id)).filter(Proposal.status == "approved").scalar() or 0
+        rejected_proposals = db.query(func.count(Proposal.id)).filter(Proposal.status == "rejected").scalar() or 0
+        on_hold_proposals = db.query(func.count(Proposal.id)).filter(Proposal.status == "on_hold").scalar() or 0
+        
+        # Project statistics
+        total_projects = db.query(func.count(Project.id)).scalar() or 0
+        active_projects = db.query(func.count(Project.id)).filter(Project.status.in_([ProjectStatus.ACTIVE, ProjectStatus.SUBMITTED])).scalar() or 0
+        
+        # User statistics
+        total_analysts = db.query(func.count(User.id)).filter(User.role == "pre_sales_analyst", User.is_active == True).scalar() or 0
+        total_managers = db.query(func.count(User.id)).filter(User.role == MANAGER_ROLE, User.is_active == True).scalar() or 0
+        
+        # Recent activity (last 7 days)
+        from datetime import date
+        seven_days_ago = now_utc_from_ist() - timedelta(days=7)
+        thirty_days_ago = now_utc_from_ist() - timedelta(days=30)
+        recent_submissions = db.query(func.count(Proposal.id)).filter(
+            Proposal.submitted_at >= seven_days_ago
+        ).scalar() or 0
+        recent_approvals = db.query(func.count(Proposal.id)).filter(
+            Proposal.reviewed_at >= seven_days_ago
+        ).filter(
+            Proposal.status == "approved"
+        ).scalar() or 0
+        
+        # Time-series data for last 30 days (daily)
+        daily_submissions = []
+        daily_approvals = []
+        for i in range(30):
+            day = now_utc_from_ist() - timedelta(days=30-i)
+            day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = day.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            submissions_count = int(db.query(func.count(Proposal.id)).filter(
+                Proposal.submitted_at >= day_start
+            ).filter(
+                Proposal.submitted_at <= day_end
+            ).scalar() or 0)
+            
+            approvals_count = int(db.query(func.count(Proposal.id)).filter(
+                Proposal.reviewed_at >= day_start
+            ).filter(
+                Proposal.reviewed_at <= day_end
+            ).filter(
+                Proposal.status == "approved"
+            ).scalar() or 0)
+            
+            daily_submissions.append({
+                "date": day_start.strftime("%Y-%m-%d"),
+                "label": day_start.strftime("%b %d"),
+                "value": submissions_count
+            })
+            daily_approvals.append({
+                "date": day_start.strftime("%Y-%m-%d"),
+                "label": day_start.strftime("%b %d"),
+                "value": approvals_count
+            })
+        
+        # Weekly data (last 4 weeks)
+        weekly_data = []
+        for i in range(4):
+            week_start = now_utc_from_ist() - timedelta(days=28-i*7)
+            week_end = week_start + timedelta(days=6)
+            week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            week_end = week_end.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            weekly_submissions = int(db.query(func.count(Proposal.id)).filter(
+                Proposal.submitted_at >= week_start
+            ).filter(
+                Proposal.submitted_at <= week_end
+            ).scalar() or 0)
+            
+            weekly_approvals = int(db.query(func.count(Proposal.id)).filter(
+                Proposal.reviewed_at >= week_start
+            ).filter(
+                Proposal.reviewed_at <= week_end
+            ).filter(
+                Proposal.status == "approved"
+            ).scalar() or 0)
+            
+            weekly_rejections = int(db.query(func.count(Proposal.id)).filter(
+                Proposal.reviewed_at >= week_start
+            ).filter(
+                Proposal.reviewed_at <= week_end
+            ).filter(
+                Proposal.status == "rejected"
+            ).scalar() or 0)
+            
+            weekly_data.append({
+                "week": f"Week {4-i}",
+                "label": week_start.strftime("%b %d"),
+                "submissions": weekly_submissions,
+                "approvals": weekly_approvals,
+                "rejections": weekly_rejections
+            })
+        
+        # Approval rate
+        reviewed_proposals = approved_proposals + rejected_proposals
+        approval_rate = (approved_proposals / reviewed_proposals * 100) if reviewed_proposals > 0 else 0
+        
+        # Proposals by status (for chart)
+        proposals_by_status = {
+            "draft": int(db.query(func.count(Proposal.id)).filter(Proposal.status == "draft").scalar() or 0),
+            "pending_approval": int(pending_proposals),
+            "approved": int(approved_proposals),
+            "rejected": int(rejected_proposals),
+            "on_hold": int(on_hold_proposals),
+        }
+        
+        # Project status breakdown
+        projects_by_status = {
+            "Draft": int(db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.DRAFT).scalar() or 0),
+            "Active": int(db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.ACTIVE).scalar() or 0),
+            "Submitted": int(db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.SUBMITTED).scalar() or 0),
+            "Won": int(db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.WON).scalar() or 0),
+            "Lost": int(db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.LOST).scalar() or 0),
+            "Archived": int(db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.ARCHIVED).scalar() or 0),
+        }
+        
+        # Industry distribution
+        industry_counts = db.query(
+            Project.industry,
+            func.count(Project.id).label('count')
+        ).group_by(Project.industry).all()
+        
+        industry_distribution = [
+            {"industry": str(industry) if industry else "Unknown", "count": int(count)}
+            for industry, count in industry_counts
+            if industry
+        ]
+        industry_distribution.sort(key=lambda x: x['count'], reverse=True)
+        industry_distribution = industry_distribution[:10]  # Top 10 industries
+        
+        # User activity (proposals per user)
+        # Get all analysts
+        analysts = db.query(User).filter(
+            User.role == "pre_sales_analyst",
+            User.is_active == True
+        ).all()
+        
+        user_activity_data = []
+        for analyst in analysts:
+            # Count proposals for projects owned by this analyst
+            proposal_count = int(db.query(func.count(Proposal.id)).join(
+                Project, Proposal.project_id == Project.id
+            ).filter(
+                Project.owner_id == analyst.id
+            ).scalar() or 0)
+            
+            if proposal_count > 0:
+                user_activity_data.append({
+                    "user": analyst.email.split('@')[0] if analyst.email else f"User {analyst.id}",
+                    "proposals": proposal_count
+                })
+        
+        # Sort by proposal count and take top 10
+        user_activity_data.sort(key=lambda x: x['proposals'], reverse=True)
+        user_activity_data = user_activity_data[:10]
+        
+        # Project creation trends (last 30 days)
+        project_creation_trend = []
+        for i in range(30):
+            day = now_utc_from_ist() - timedelta(days=30-i)
+            day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = day.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            projects_created = int(db.query(func.count(Project.id)).filter(
+                Project.created_at >= day_start
+            ).filter(
+                Project.created_at <= day_end
+            ).scalar() or 0)
+            
+            project_creation_trend.append({
+                "date": day_start.strftime("%Y-%m-%d"),
+                "label": day_start.strftime("%b %d"),
+                "value": projects_created
+            })
+        
+        # Win/Loss ratio
+        won_projects = projects_by_status.get("Won", 0)
+        lost_projects = projects_by_status.get("Lost", 0)
+        total_closed = won_projects + lost_projects
+        win_rate = (won_projects / total_closed * 100) if total_closed > 0 else 0
+        
+        # Build response dictionary
+        response_data = {
+            "proposals": {
+                "total": int(total_proposals),
+                "pending": int(pending_proposals),
+                "approved": int(approved_proposals),
+                "rejected": int(rejected_proposals),
+                "on_hold": int(on_hold_proposals),
+                "by_status": proposals_by_status,
+            },
+            "projects": {
+                "total": int(total_projects),
+                "active": int(active_projects),
+                "by_status": projects_by_status,
+                "won": int(won_projects),
+                "lost": int(lost_projects),
+                "win_rate": float(round(win_rate, 2)),
+            },
+            "users": {
+                "analysts": int(total_analysts),
+                "managers": int(total_managers),
+                "total": int(total_analysts + total_managers),
+                "top_contributors": user_activity_data,
+            },
+            "activity": {
+                "recent_submissions": int(recent_submissions),
+                "recent_approvals": int(recent_approvals),
+                "approval_rate": float(round(approval_rate, 2)),
+            },
+            "time_series": {
+                "daily_submissions": daily_submissions,
+                "daily_approvals": daily_approvals,
+                "weekly": weekly_data,
+                "project_creation": project_creation_trend,
+            },
+            "industry_distribution": industry_distribution,
+        }
+        
+        # Use jsonable_encoder to ensure all data is JSON serializable
+        # Then return as JSONResponse to bypass FastAPI validation
+        try:
+            encoded_data = jsonable_encoder(response_data)
+            return JSONResponse(content=encoded_data)
+        except Exception as encode_error:
+            import traceback
+            print(f"Error encoding analytics response: {encode_error}")
+            print(f"Traceback: {traceback.format_exc()}")
+            # Try to return a minimal response to help debug
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error encoding analytics response: {str(encode_error)}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in admin_analytics: {str(e)}")
+        print(f"Traceback: {error_details}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch analytics: {str(e)}"
+        )
+
 @router.get("/admin/{proposal_id}", response_model=ProposalResponse)
 async def admin_get_proposal(
     proposal_id: int,
@@ -1137,247 +1408,4 @@ async def admin_get_proposal(
         )
     
     return proposal
-
-@router.get("/admin/analytics")
-async def admin_analytics(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Get comprehensive analytics for admin dashboard."""
-    MANAGER_ROLE = "pre_sales_manager"
-    
-    if current_user.role != MANAGER_ROLE:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied"
-        )
-    
-    from sqlalchemy import func, case
-    from models.project import Project
-    from models.insights import Insights
-    
-    # Proposal statistics
-    total_proposals = db.query(func.count(Proposal.id)).scalar() or 0
-    pending_proposals = db.query(func.count(Proposal.id)).filter(Proposal.status == "pending_approval").scalar() or 0
-    approved_proposals = db.query(func.count(Proposal.id)).filter(Proposal.status == "approved").scalar() or 0
-    rejected_proposals = db.query(func.count(Proposal.id)).filter(Proposal.status == "rejected").scalar() or 0
-    on_hold_proposals = db.query(func.count(Proposal.id)).filter(Proposal.status == "on_hold").scalar() or 0
-    
-    # Project statistics
-    total_projects = db.query(func.count(Project.id)).scalar() or 0
-    active_projects = db.query(func.count(Project.id)).filter(Project.status.in_(["Active", "Submitted"])).scalar() or 0
-    
-    # User statistics
-    total_analysts = db.query(func.count(User.id)).filter(User.role == "pre_sales_analyst", User.is_active == True).scalar() or 0
-    total_managers = db.query(func.count(User.id)).filter(User.role == MANAGER_ROLE, User.is_active == True).scalar() or 0
-    
-    # Recent activity (last 7 days)
-    from datetime import date
-    seven_days_ago = now_utc_from_ist() - timedelta(days=7)
-    thirty_days_ago = now_utc_from_ist() - timedelta(days=30)
-    recent_submissions = db.query(func.count(Proposal.id)).filter(
-        Proposal.submitted_at >= seven_days_ago
-    ).scalar() or 0
-    recent_approvals = db.query(func.count(Proposal.id)).filter(
-        Proposal.reviewed_at >= seven_days_ago
-    ).filter(
-        Proposal.status == "approved"
-    ).scalar() or 0
-    
-    # Time-series data for last 30 days (daily)
-    daily_submissions = []
-    daily_approvals = []
-    for i in range(30):
-        day = now_utc_from_ist() - timedelta(days=30-i)
-        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day.replace(hour=23, minute=59, second=59, microsecond=999999)
-        
-        submissions_count = db.query(func.count(Proposal.id)).filter(
-            Proposal.submitted_at >= day_start
-        ).filter(
-            Proposal.submitted_at <= day_end
-        ).scalar() or 0
-        
-        approvals_count = db.query(func.count(Proposal.id)).filter(
-            Proposal.reviewed_at >= day_start
-        ).filter(
-            Proposal.reviewed_at <= day_end
-        ).filter(
-            Proposal.status == "approved"
-        ).scalar() or 0
-        
-        daily_submissions.append({
-            "date": day_start.strftime("%Y-%m-%d"),
-            "label": day_start.strftime("%b %d"),
-            "value": submissions_count
-        })
-        daily_approvals.append({
-            "date": day_start.strftime("%Y-%m-%d"),
-            "label": day_start.strftime("%b %d"),
-            "value": approvals_count
-        })
-    
-    # Weekly data (last 4 weeks)
-    weekly_data = []
-    for i in range(4):
-        week_start = now_utc_from_ist() - timedelta(days=28-i*7)
-        week_end = week_start + timedelta(days=6)
-        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-        week_end = week_end.replace(hour=23, minute=59, second=59, microsecond=999999)
-        
-        weekly_submissions = db.query(func.count(Proposal.id)).filter(
-            Proposal.submitted_at >= week_start
-        ).filter(
-            Proposal.submitted_at <= week_end
-        ).scalar() or 0
-        
-        weekly_approvals = db.query(func.count(Proposal.id)).filter(
-            Proposal.reviewed_at >= week_start
-        ).filter(
-            Proposal.reviewed_at <= week_end
-        ).filter(
-            Proposal.status == "approved"
-        ).scalar() or 0
-        
-        weekly_rejections = db.query(func.count(Proposal.id)).filter(
-            Proposal.reviewed_at >= week_start
-        ).filter(
-            Proposal.reviewed_at <= week_end
-        ).filter(
-            Proposal.status == "rejected"
-        ).scalar() or 0
-        
-        weekly_data.append({
-            "week": f"Week {4-i}",
-            "label": week_start.strftime("%b %d"),
-            "submissions": weekly_submissions,
-            "approvals": weekly_approvals,
-            "rejections": weekly_rejections
-        })
-    
-    # Approval rate
-    reviewed_proposals = approved_proposals + rejected_proposals
-    approval_rate = (approved_proposals / reviewed_proposals * 100) if reviewed_proposals > 0 else 0
-    
-    # Proposals by status (for chart)
-    proposals_by_status = {
-        "draft": db.query(func.count(Proposal.id)).filter(Proposal.status == "draft").scalar() or 0,
-        "pending_approval": pending_proposals,
-        "approved": approved_proposals,
-        "rejected": rejected_proposals,
-        "on_hold": on_hold_proposals,
-    }
-    
-    # Project status breakdown
-    from models.project import ProjectStatus
-    projects_by_status = {
-        "Draft": db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.DRAFT).scalar() or 0,
-        "Active": db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.ACTIVE).scalar() or 0,
-        "Submitted": db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.SUBMITTED).scalar() or 0,
-        "Won": db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.WON).scalar() or 0,
-        "Lost": db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.LOST).scalar() or 0,
-        "Archived": db.query(func.count(Project.id)).filter(Project.status == ProjectStatus.ARCHIVED).scalar() or 0,
-    }
-    
-    # Industry distribution
-    industry_counts = db.query(
-        Project.industry,
-        func.count(Project.id).label('count')
-    ).group_by(Project.industry).all()
-    
-    industry_distribution = [
-        {"industry": industry, "count": count}
-        for industry, count in industry_counts
-        if industry
-    ]
-    industry_distribution.sort(key=lambda x: x['count'], reverse=True)
-    industry_distribution = industry_distribution[:10]  # Top 10 industries
-    
-    # User activity (proposals per user)
-    # Get all analysts
-    analysts = db.query(User).filter(
-        User.role == "pre_sales_analyst",
-        User.is_active == True
-    ).all()
-    
-    user_activity_data = []
-    for analyst in analysts:
-        # Count proposals for projects owned by this analyst
-        proposal_count = db.query(func.count(Proposal.id)).join(
-            Project, Proposal.project_id == Project.id
-        ).filter(
-            Project.owner_id == analyst.id
-        ).scalar() or 0
-        
-        if proposal_count > 0:
-            user_activity_data.append({
-                "user": analyst.email.split('@')[0] if analyst.email else f"User {analyst.id}",
-                "proposals": proposal_count
-            })
-    
-    # Sort by proposal count and take top 10
-    user_activity_data.sort(key=lambda x: x['proposals'], reverse=True)
-    user_activity_data = user_activity_data[:10]
-    
-    # Project creation trends (last 30 days)
-    project_creation_trend = []
-    for i in range(30):
-        day = now_utc_from_ist() - timedelta(days=30-i)
-        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day.replace(hour=23, minute=59, second=59, microsecond=999999)
-        
-        projects_created = db.query(func.count(Project.id)).filter(
-            Project.created_at >= day_start
-        ).filter(
-            Project.created_at <= day_end
-        ).scalar() or 0
-        
-        project_creation_trend.append({
-            "date": day_start.strftime("%Y-%m-%d"),
-            "label": day_start.strftime("%b %d"),
-            "value": projects_created
-        })
-    
-    # Win/Loss ratio
-    won_projects = projects_by_status.get("Won", 0)
-    lost_projects = projects_by_status.get("Lost", 0)
-    total_closed = won_projects + lost_projects
-    win_rate = (won_projects / total_closed * 100) if total_closed > 0 else 0
-    
-    return {
-        "proposals": {
-            "total": total_proposals,
-            "pending": pending_proposals,
-            "approved": approved_proposals,
-            "rejected": rejected_proposals,
-            "on_hold": on_hold_proposals,
-            "by_status": proposals_by_status,
-        },
-        "projects": {
-            "total": total_projects,
-            "active": active_projects,
-            "by_status": projects_by_status,
-            "won": won_projects,
-            "lost": lost_projects,
-            "win_rate": round(win_rate, 2),
-        },
-        "users": {
-            "analysts": total_analysts,
-            "managers": total_managers,
-            "total": total_analysts + total_managers,
-            "top_contributors": user_activity_data,
-        },
-        "activity": {
-            "recent_submissions": recent_submissions,
-            "recent_approvals": recent_approvals,
-            "approval_rate": round(approval_rate, 2),
-        },
-        "time_series": {
-            "daily_submissions": daily_submissions,
-            "daily_approvals": daily_approvals,
-            "weekly": weekly_data,
-            "project_creation": project_creation_trend,
-        },
-        "industry_distribution": industry_distribution,
-    }
 
