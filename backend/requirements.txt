@@ -113,3 +113,7 @@ langsmith>=0.1.0,<1.0.0  # LangSmith for LLM monitoring (optional)
 google-cloud-texttospeech>=2.16.0  # Google Cloud TTS
 # azure-cognitiveservices-speech>=1.32.0  # Azure TTS (optional, uncomment if using Azure)
 pydub>=0.25.1  # Audio processing (optional)
+
+# GOOGLE CLOUD STORAGE
+# ===============================
+google-cloud-storage>=2.10.0  # Google Cloud Storage for file uploads and ChromaDB

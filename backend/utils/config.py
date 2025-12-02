@@ -64,10 +64,16 @@ class Settings(BaseSettings):
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"  # LangSmith endpoint
     LANGCHAIN_PROJECT: str = "novaintel"  # LangSmith project name
     
-    # File Upload - Local Storage
+    # File Upload - Storage Configuration
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 20 * 1024 * 1024  # 20MB
     ALLOWED_EXTENSIONS: str = ".pdf,.docx"  # Comma-separated string in .env
+    
+    # Cloud Storage Configuration (Google Cloud Storage)
+    USE_CLOUD_STORAGE: bool = False  # Set to True to use GCS instead of local storage
+    GCS_BUCKET_NAME: str = ""  # Google Cloud Storage bucket name (e.g., "novaintel-uploads")
+    GCS_CHROMADB_BUCKET: str = ""  # Bucket for ChromaDB persistence (e.g., "novaintel-chromadb")
+    GCS_EXPORTS_BUCKET: str = ""  # Bucket for exports (e.g., "novaintel-exports")
     
     # Email Configuration (for email verification)
     # Support both SMTP_* and MAIL_* naming (fastapi-mail uses MAIL_*)

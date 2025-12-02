@@ -1,0 +1,7 @@
+# Create the .gcloudignore file
+@"
+node_modules/
+backend/
+.git/
+.env
+"@ | Out-File -Encoding ASCII .gcloudignore

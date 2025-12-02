@@ -299,3 +299,18 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+# -----------------------------------------------------
+# ✅ ENTRY POINT — REQUIRED FOR CLOUD RUN
+# -----------------------------------------------------
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    
+    # Get the port from environment variable (Cloud Run injects this)
+    port = int(os.environ.get("PORT", 8080))
+    
+    # Run Uvicorn
+    # host="0.0.0.0" is CRITICAL for Cloud Run to work
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
