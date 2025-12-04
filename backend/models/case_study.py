@@ -35,4 +35,6 @@ class CaseStudy(Base):
         foreign_keys="CaseStudyDocument.case_study_id",
         back_populates="case_study"
     )
+    # Source project this case study was created from
+    project = relationship("Project", back_populates="case_studies")
 

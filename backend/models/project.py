@@ -49,4 +49,6 @@ class Project(Base):
     rfp_documents = relationship("RFPDocument", back_populates="project", cascade="all, delete-orphan")
     insights = relationship("Insights", back_populates="project", uselist=False, cascade="all, delete-orphan")
     proposals = relationship("Proposal", back_populates="project", cascade="all, delete-orphan")
+    # Case studies created from this project
+    case_studies = relationship("CaseStudy", back_populates="project", cascade="all, delete-orphan")
 

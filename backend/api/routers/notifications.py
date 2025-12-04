@@ -100,6 +100,38 @@ async def mark_all_notifications_as_read(
             detail=f"Failed to mark all notifications as read: {str(e)}"
         )
 
+@router.delete("/notifications/{notification_id}")
+async def delete_notification(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a notification."""
+    try:
+        notification = db.query(Notification).filter(
+            Notification.id == notification_id,
+            Notification.user_id == current_user.id
+        ).first()
+        
+        if not notification:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Notification not found"
+            )
+        
+        db.delete(notification)
+        db.commit()
+        
+        return {"message": "Notification deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete notification: {str(e)}"
+        )
+
 @router.post("/notifications", response_model=NotificationResponse)
 async def create_notification(
     notification_data: NotificationCreate,

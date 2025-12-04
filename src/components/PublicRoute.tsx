@@ -1,5 +1,6 @@
 import { Navigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { Loader } from "@/components/Loader";
 
 interface PublicRouteProps {
   children: React.ReactNode;
@@ -10,14 +11,7 @@ export function PublicRoute({ children }: PublicRouteProps) {
 
   if (isLoading) {
     // Show loading state while checking authentication
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-center">
-          <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
-          <p className="text-muted-foreground">Loading...</p>
-        </div>
-      </div>
-    );
+    return <Loader size="md" text="Loading..." fullScreen />;
   }
 
   if (isAuthenticated) {

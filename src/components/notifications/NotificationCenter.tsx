@@ -9,8 +9,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatIST, relativeTimeIST } from "@/utils/timezone";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api";
+import { toast } from "sonner";
 
 interface Notification {
   id: number;
@@ -27,21 +28,27 @@ interface Notification {
 
 export function NotificationCenter() {
   const [open, setOpen] = useState(false);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const queryClient = useQueryClient();
 
   // Poll for notifications
-  const { data: fetchedNotifications } = useQuery({
+  const { data: notifications = [] } = useQuery({
     queryKey: ["notifications"],
     queryFn: () => apiClient.getNotifications(),
     refetchInterval: 5000, // Poll every 5 seconds
     retry: false,
   });
 
-  useEffect(() => {
-    if (fetchedNotifications) {
-      setNotifications(fetchedNotifications);
-    }
-  }, [fetchedNotifications]);
+  // Delete notification mutation
+  const deleteNotificationMutation = useMutation({
+    mutationFn: (id: number) => apiClient.deleteNotification(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      toast.success("Notification deleted");
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Failed to delete notification");
+    },
+  });
 
   const unreadCount = notifications.filter(n => !n.is_read).length;
 
@@ -77,7 +84,7 @@ export function NotificationCenter() {
   const markAsRead = async (id: number) => {
     try {
       await apiClient.markNotificationAsRead(id);
-      setNotifications(notifications.map(n => n.id === id ? { ...n, is_read: true } : n));
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
     } catch (error) {
       console.error("Failed to mark notification as read:", error);
     }
@@ -86,10 +93,15 @@ export function NotificationCenter() {
   const markAllAsRead = async () => {
     try {
       await apiClient.markAllNotificationsAsRead();
-      setNotifications(notifications.map(n => ({ ...n, is_read: true })));
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
     } catch (error) {
       console.error("Failed to mark all as read:", error);
     }
+  };
+
+  const handleDeleteNotification = (id: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    deleteNotificationMutation.mutate(id);
   };
 
   return (
@@ -153,11 +165,9 @@ export function NotificationCenter() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-6 w-6"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        // Handle delete if needed
-                      }}
+                      className="h-6 w-6 hover:bg-destructive/10 hover:text-destructive"
+                      onClick={(e) => handleDeleteNotification(notification.id, e)}
+                      disabled={deleteNotificationMutation.isPending}
                     >
                       <X className="h-3 w-3" />
                     </Button>

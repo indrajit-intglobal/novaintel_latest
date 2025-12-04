@@ -8,7 +8,7 @@ import requests
 import base64
 from pathlib import Path
 from utils.config import settings
-from utils.retry import retry, async_retry
+from utils.retry import retry, async_retry, PermanentError
 from utils.circuit_breaker import circuit_breaker, async_circuit_breaker
 
 class GeminiService:
@@ -18,15 +18,51 @@ class GeminiService:
         self.api_key = settings.GEMINI_API_KEY
         self.model = settings.GEMINI_MODEL
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        self._circuit_breaker = None  # Will be set by decorator
+        self._last_error = None
         
     def is_available(self) -> bool:
         """Check if Gemini service is available."""
         return bool(self.api_key)
     
-    @retry(max_attempts=3, backoff="exponential", base_delay=1.0, exceptions=(requests.RequestException,))
-    @circuit_breaker(failure_threshold=5, recovery_timeout=60.0, expected_exception=Exception)
+    def get_service_status(self) -> Dict[str, Any]:
+        """
+        Get current service status including circuit breaker state.
+        
+        Returns:
+            dict with 'available', 'circuit_breaker_open', 'error' keys
+        """
+        status = {
+            "available": self.is_available(),
+            "circuit_breaker_open": False,
+            "error": None
+        }
+        
+        if not status["available"]:
+            status["error"] = "Gemini API key not configured"
+            return status
+        
+        # Check for recent errors that might indicate circuit breaker state
+        if self._last_error:
+            error_str = self._last_error
+            if "Circuit breaker" in error_str and "OPEN" in error_str:
+                status["circuit_breaker_open"] = True
+                status["error"] = "Service temporarily unavailable. Please try again in a moment."
+            elif "403" in error_str or "Forbidden" in error_str:
+                status["error"] = "API key authentication failed. Please check your GEMINI_API_KEY configuration."
+            else:
+                status["error"] = self._last_error
+            
+        return status
+    
     def _make_request(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Make HTTP request with retry and circuit breaker."""
+        return self._make_request_with_cb(url, payload)
+    
+    @retry(max_attempts=3, backoff="exponential", base_delay=1.0, exceptions=(requests.RequestException,))
+    @circuit_breaker(failure_threshold=5, recovery_timeout=60.0, expected_exception=Exception)
+    def _make_request_with_cb(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Make HTTP request with retry and circuit breaker (internal)."""
         headers = {
             "Content-Type": "application/json"
         }
@@ -34,7 +70,74 @@ class GeminiService:
         if self.api_key:
             url = f"{url}?key={self.api_key}"
         
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+        except requests.RequestException as e:
+            self._last_error = str(e)
+            raise
+        
+        # Handle 403 Forbidden errors (API key issues)
+        if response.status_code == 403:
+            error_message = "Forbidden: API key may be invalid or expired"
+            try:
+                error_data = response.json()
+                error_obj = error_data.get("error", {})
+                error_message = error_obj.get("message", error_message)
+                
+                # Check for API key issues
+                error_details = error_obj.get("details", [])
+                is_api_key_error = any(
+                    detail.get("reason") == "API_KEY_INVALID" or 
+                    "API key" in error_message or
+                    "API_KEY" in str(detail) or
+                    "permission" in error_message.lower() or
+                    "forbidden" in error_message.lower()
+                    for detail in error_details
+                )
+                
+                # Check for permanent API key errors (leaked, invalid, expired)
+                is_permanent_error = (
+                    "leaked" in error_message.lower() or
+                    "reported as leaked" in error_message.lower() or
+                    ("invalid" in error_message.lower() and "api key" in error_message.lower()) or
+                    ("expired" in error_message.lower() and "api key" in error_message.lower())
+                )
+                
+                if is_api_key_error:
+                    if is_permanent_error:
+                        # Raise PermanentError to skip retries
+                        raise PermanentError(
+                            f"403 Forbidden: {error_message}. "
+                            f"Please check your GEMINI_API_KEY in the .env file. "
+                            f"The API key may be invalid, expired, or reported as leaked. "
+                            f"You need to generate a new API key from Google AI Studio."
+                        )
+                    else:
+                        # Don't let 403 errors trigger circuit breaker failures
+                        # These are permanent configuration issues, not transient failures
+                        raise requests.RequestException(
+                            f"403 Forbidden: {error_message}. "
+                            f"Please check your GEMINI_API_KEY in the .env file. "
+                            f"The API key may be invalid, expired, or not have the required permissions."
+                        )
+            except PermanentError:
+                # Re-raise permanent errors
+                raise
+            except (ValueError, KeyError, json.JSONDecodeError):
+                pass
+            
+            # Generic 403 error - check if it's a permanent error
+            if "leaked" in error_message.lower() or "reported as leaked" in error_message.lower():
+                raise PermanentError(
+                    f"403 Forbidden: {error_message}. "
+                    f"Your API key was reported as leaked. Please generate a new API key from Google AI Studio."
+                )
+            
+            # Generic 403 error
+            raise requests.RequestException(
+                f"403 Forbidden: {error_message}. "
+                f"Please verify your GEMINI_API_KEY has the correct permissions."
+            )
         
         # Better error handling for 400 errors
         if response.status_code == 400:
@@ -134,6 +237,7 @@ class GeminiService:
         
         try:
             response_data = self._make_request(url, payload)
+            self._last_error = None  # Clear error on success
             
             if "candidates" in response_data and len(response_data["candidates"]) > 0:
                 candidate = response_data["candidates"][0]
@@ -148,15 +252,42 @@ class GeminiService:
                 "content": None,
                 "error": "No response from Gemini API"
             }
-        except requests.RequestException as e:
+        except PermanentError as e:
+            # Permanent errors (e.g., leaked API keys) - don't retry
+            error_msg = str(e)
             return {
                 "content": None,
-                "error": f"Request failed: {str(e)}"
+                "error": error_msg
+            }
+        except requests.RequestException as e:
+            error_msg = str(e)
+            # Check for circuit breaker errors
+            if "Circuit breaker" in error_msg and "OPEN" in error_msg:
+                return {
+                    "content": None,
+                    "error": "Gemini API is temporarily unavailable. Please try again in a moment."
+                }
+            # Check for API key errors
+            if "403" in error_msg or "Forbidden" in error_msg:
+                return {
+                    "content": None,
+                    "error": "API key authentication failed. Please check your GEMINI_API_KEY configuration."
+                }
+            return {
+                "content": None,
+                "error": f"Request failed: {error_msg}"
             }
         except Exception as e:
+            error_msg = str(e)
+            # Check for circuit breaker errors
+            if "Circuit breaker" in error_msg:
+                return {
+                    "content": None,
+                    "error": "Gemini API is temporarily unavailable. Please try again in a moment."
+                }
             return {
                 "content": None,
-                "error": f"Unexpected error: {str(e)}"
+                "error": f"Unexpected error: {error_msg}"
             }
     
     def chat(
@@ -230,6 +361,7 @@ class GeminiService:
         
         try:
             response_data = self._make_request(url, payload)
+            self._last_error = None  # Clear error on success
             print(f"    [GeminiService.chat] API request completed", flush=True)
             
             if "candidates" in response_data and len(response_data["candidates"]) > 0:
@@ -246,15 +378,42 @@ class GeminiService:
                 "error": "No content in response"
             }
             
-        except requests.exceptions.RequestException as e:
+        except PermanentError as e:
+            # Permanent errors (e.g., leaked API keys) - don't retry
+            error_msg = str(e)
             return {
                 "content": None,
-                "error": f"API request failed: {str(e)}"
+                "error": error_msg
+            }
+        except requests.exceptions.RequestException as e:
+            error_msg = str(e)
+            # Check for circuit breaker errors
+            if "Circuit breaker" in error_msg and "OPEN" in error_msg:
+                return {
+                    "content": None,
+                    "error": "Gemini API is temporarily unavailable. Please try again in a moment."
+                }
+            # Check for API key errors
+            if "403" in error_msg or "Forbidden" in error_msg:
+                return {
+                    "content": None,
+                    "error": "API key authentication failed. Please check your GEMINI_API_KEY configuration."
+                }
+            return {
+                "content": None,
+                "error": f"API request failed: {error_msg}"
             }
         except Exception as e:
+            error_msg = str(e)
+            # Check for circuit breaker errors
+            if "Circuit breaker" in error_msg:
+                return {
+                    "content": None,
+                    "error": "Gemini API is temporarily unavailable. Please try again in a moment."
+                }
             return {
                 "content": None,
-                "error": f"Error: {str(e)}"
+                "error": f"Error: {error_msg}"
             }
     
     def extract_json(self, text: str) -> Optional[Dict]:

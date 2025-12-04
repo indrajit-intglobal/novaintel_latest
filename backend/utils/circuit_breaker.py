@@ -72,7 +72,18 @@ class CircuitBreaker:
             return result
         
         except self.expected_exception as e:
-            self._record_failure()
+            # Don't count permanent errors or API key issues as circuit breaker failures
+            # These are permanent configuration issues, not transient failures
+            error_msg = str(e)
+            is_permanent_error = (
+                "PermanentError" in str(type(e)) or
+                "403" in error_msg or 
+                "Forbidden" in error_msg or 
+                ("API key" in error_msg and ("invalid" in error_msg.lower() or "expired" in error_msg.lower() or "leaked" in error_msg.lower()))
+            )
+            
+            if not is_permanent_error:
+                self._record_failure()
             raise e
     
     async def call_async(self, func: Callable, *args, **kwargs) -> Any:
@@ -102,7 +113,18 @@ class CircuitBreaker:
             return result
         
         except self.expected_exception as e:
-            self._record_failure()
+            # Don't count permanent errors or API key issues as circuit breaker failures
+            # These are permanent configuration issues, not transient failures
+            error_msg = str(e)
+            is_permanent_error = (
+                "PermanentError" in str(type(e)) or
+                "403" in error_msg or 
+                "Forbidden" in error_msg or 
+                ("API key" in error_msg and ("invalid" in error_msg.lower() or "expired" in error_msg.lower() or "leaked" in error_msg.lower()))
+            )
+            
+            if not is_permanent_error:
+                self._record_failure()
             raise e
     
     def _record_failure(self):
@@ -117,6 +139,25 @@ class CircuitBreaker:
                     f"({self.failure_count} failures >= {self.failure_threshold})"
                 )
                 self.state = CircuitState.OPEN
+    
+    def is_open(self) -> bool:
+        """Check if circuit breaker is currently open."""
+        if self.state == CircuitState.OPEN:
+            # Check if recovery timeout has passed
+            if self.last_failure_time and \
+               (time.time() - self.last_failure_time) >= self.recovery_timeout:
+                # Timeout passed, should transition to HALF_OPEN on next call
+                return False
+            return True
+        return False
+    
+    def get_state(self) -> CircuitState:
+        """Get current circuit breaker state."""
+        # Auto-transition from OPEN to HALF_OPEN if timeout passed
+        if self.state == CircuitState.OPEN and self.last_failure_time:
+            if (time.time() - self.last_failure_time) >= self.recovery_timeout:
+                return CircuitState.HALF_OPEN
+        return self.state
     
     def reset(self):
         """Manually reset circuit breaker."""

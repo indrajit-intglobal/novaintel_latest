@@ -98,32 +98,51 @@ def migrate_icp_profiles_table():
                 WHERE table_name='icp_profiles'
             """)
             result = conn.execute(check_query)
-            if result.fetchone():
-                print("  [OK] Table 'icp_profiles' already exists, skipping...")
-                return
-            
-            # Create table
-            create_query = text("""
-                CREATE TABLE IF NOT EXISTS icp_profiles (
-                    id SERIAL PRIMARY KEY,
-                    company_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    name VARCHAR(255) NOT NULL,
-                    industry VARCHAR(255),
-                    company_size_min INTEGER,
-                    company_size_max INTEGER,
-                    tech_stack JSONB,
-                    budget_range_min INTEGER,
-                    budget_range_max INTEGER,
-                    geographic_regions JSONB,
-                    additional_criteria JSONB,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                )
+            table_exists = bool(result.fetchone())
+
+            if not table_exists:
+                # Create table with the base columns (without worrying about drift)
+                create_query = text("""
+                    CREATE TABLE IF NOT EXISTS icp_profiles (
+                        id SERIAL PRIMARY KEY,
+                        company_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        name VARCHAR(255) NOT NULL,
+                        industry VARCHAR(255),
+                        company_size_min INTEGER,
+                        company_size_max INTEGER,
+                        tech_stack JSONB,
+                        budget_range_min INTEGER,
+                        budget_range_max INTEGER,
+                        geographic_regions JSONB,
+                        additional_criteria JSONB,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+                conn.execute(create_query)
+                conn.commit()
+                print("  [OK] Created table: icp_profiles")
+            else:
+                print("  [OK] Table 'icp_profiles' already exists")
+
+            # Ensure last_analyzed_at column exists to match SQLAlchemy model
+            add_column_query = text("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'icp_profiles' AND column_name = 'last_analyzed_at'
+                    ) THEN
+                        ALTER TABLE icp_profiles 
+                        ADD COLUMN last_analyzed_at TIMESTAMP WITH TIME ZONE NULL;
+                    END IF;
+                END $$;
             """)
-            conn.execute(create_query)
+            conn.execute(add_column_query)
             conn.commit()
-            
-            # Create index
+            print("  [OK] Ensured column 'last_analyzed_at' exists on icp_profiles")
+
+            # Create index (idempotent)
             index_query = text("""
                 CREATE INDEX IF NOT EXISTS idx_icp_profiles_company_id 
                 ON icp_profiles(company_id)
@@ -131,9 +150,8 @@ def migrate_icp_profiles_table():
             conn.execute(index_query)
             conn.commit()
             
-            print("  [OK] Created table: icp_profiles")
         except Exception as e:
-            print(f"  ⚠ Error creating icp_profiles table: {e}")
+            print(f"  ⚠ Error creating or updating icp_profiles table: {e}")
             conn.rollback()
     
     print("[OK] ICP profiles table migration complete\n")
@@ -151,10 +169,8 @@ def migrate_win_loss_data_table():
                 WHERE table_name='win_loss_data'
             """)
             result = conn.execute(check_query)
-            if result.fetchone():
-                print("  [OK] Table 'win_loss_data' already exists, skipping...")
-                return
-            
+            table_exists = bool(result.fetchone())
+
             # Create enum type if it doesn't exist
             enum_query = text("""
                 DO $$ BEGIN
@@ -166,29 +182,51 @@ def migrate_win_loss_data_table():
             conn.execute(enum_query)
             conn.commit()
             
-            # Create table
-            create_query = text("""
-                CREATE TABLE IF NOT EXISTS win_loss_data (
-                    id SERIAL PRIMARY KEY,
-                    company_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    deal_id VARCHAR(255),
-                    client_name VARCHAR(255) NOT NULL,
-                    industry VARCHAR(255),
-                    region VARCHAR(255),
-                    competitor VARCHAR(255),
-                    competitors JSONB,
-                    outcome dealoutcome NOT NULL,
-                    deal_size FLOAT,
-                    deal_date TIMESTAMP WITH TIME ZONE,
-                    win_reasons TEXT,
-                    loss_reasons TEXT,
-                    rfp_characteristics JSONB,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                )
-            """)
-            conn.execute(create_query)
-            conn.commit()
+            if not table_exists:
+                # Create table with base columns
+                create_query = text("""
+                    CREATE TABLE IF NOT EXISTS win_loss_data (
+                        id SERIAL PRIMARY KEY,
+                        company_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        deal_id VARCHAR(255),
+                        client_name VARCHAR(255) NOT NULL,
+                        industry VARCHAR(255),
+                        region VARCHAR(255),
+                        competitor VARCHAR(255),
+                        competitors JSONB,
+                        outcome dealoutcome NOT NULL,
+                        deal_size FLOAT,
+                        deal_date TIMESTAMP WITH TIME ZONE,
+                        win_reasons TEXT,
+                        loss_reasons TEXT,
+                        rfp_characteristics JSONB,
+                        auto_generated BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+                conn.execute(create_query)
+                conn.commit()
+                print("  [OK] Created table: win_loss_data")
+            else:
+                print("  [OK] Table 'win_loss_data' already exists")
+
+                # Ensure auto_generated column exists to match SQLAlchemy model
+                add_column_query = text("""
+                    DO $$ 
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = 'win_loss_data' AND column_name = 'auto_generated'
+                        ) THEN
+                            ALTER TABLE win_loss_data 
+                            ADD COLUMN auto_generated BOOLEAN DEFAULT FALSE;
+                        END IF;
+                    END $$;
+                """)
+                conn.execute(add_column_query)
+                conn.commit()
+                print("  [OK] Ensured column 'auto_generated' exists on win_loss_data")
             
             # Create indexes
             indexes = [
@@ -208,9 +246,8 @@ def migrate_win_loss_data_table():
                 except Exception as e:
                     print(f"  ⚠ Error creating index {index_name}: {e}")
             
-            print("  [OK] Created table: win_loss_data")
         except Exception as e:
-            print(f"  ⚠ Error creating win_loss_data table: {e}")
+            print(f"  ⚠ Error creating or updating win_loss_data table: {e}")
             conn.rollback()
     
     print("[OK] Win/Loss data table migration complete\n")

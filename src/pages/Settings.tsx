@@ -150,10 +150,9 @@ export default function Settings() {
   });
 
   const handleSaveChanges = () => {
-    // Update profile (including company name)
+    // Update profile (excluding role - it cannot be changed)
     updateProfileMutation.mutate({
       full_name: profileData.full_name,
-      role: profileData.role,
       company_name: settingsData.company_name,
       company_logo: settingsData.company_logo,
     });
@@ -233,11 +232,11 @@ export default function Settings() {
                   <Label htmlFor="role">Role</Label>
                   <Input
                     id="role"
-                    value={profileData.role}
-                    onChange={(e) => setProfileData({ ...profileData, role: e.target.value })}
-                    placeholder="e.g., Presales Manager"
-                    className="bg-background/50"
+                    value={profileData.role ? profileData.role.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()) : ''}
+                    disabled
+                    className="bg-background/50 opacity-60"
                   />
+                  <p className="text-xs text-muted-foreground">Role cannot be changed</p>
                 </div>
               </div>
             </Card>

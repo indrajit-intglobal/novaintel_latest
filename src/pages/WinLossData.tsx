@@ -43,6 +43,7 @@ import { apiClient, WinLossData, WinLossDataCreate, WinLossDataUpdate } from "@/
 import { toast } from "sonner";
 import { useState } from "react";
 import { format } from "date-fns";
+import { Loader } from "@/components/Loader";
 
 const INDUSTRIES = [
   "BFSI",
@@ -291,9 +292,7 @@ export default function WinLossDataPage() {
         {/* Records Table */}
         {isLoading ? (
           <Card className="p-8">
-            <div className="flex items-center justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
-            </div>
+            <Loader size="md" />
           </Card>
         ) : filteredRecords.length === 0 ? (
           <Card className="p-8">

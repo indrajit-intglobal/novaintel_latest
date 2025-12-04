@@ -168,15 +168,93 @@ Return your analysis as JSON with the structure specified above.""")
             
             return result
             
-        except Exception as e:
-            print(f"[Go/No-Go Analyzer] Error: {e}")
-            import traceback
-            traceback.print_exc()
+        except ValueError as e:
+            # Handle LLM errors (including circuit breaker errors)
+            error_msg = str(e)
+            print(f"[Go/No-Go Analyzer] LLM error: {e}")
+            
+            # Check for circuit breaker errors
+            if "Circuit breaker" in error_msg and "OPEN" in error_msg:
+                return {
+                    "score": 50.0,
+                    "recommendation": "unknown",
+                    "alignment_score": 50.0,
+                    "win_probability": 50.0,
+                    "competitive_risk": 50.0,
+                    "timeline_scope_risk": 50.0,
+                    "hidden_signals": [],
+                    "risk_factors": ["Gemini API is temporarily unavailable. Please try again in a moment."],
+                    "opportunities": [],
+                    "detailed_analysis": "The analysis service is currently unavailable. This may be due to temporary API issues. Please try again in a moment.",
+                    "error": "Service temporarily unavailable. Please try again in a moment."
+                }
+            
+            # Check for API key errors
+            if "403" in error_msg or "Forbidden" in error_msg or "API key" in error_msg:
+                return {
+                    "score": 50.0,
+                    "recommendation": "unknown",
+                    "alignment_score": 50.0,
+                    "win_probability": 50.0,
+                    "competitive_risk": 50.0,
+                    "timeline_scope_risk": 50.0,
+                    "hidden_signals": [],
+                    "risk_factors": ["API key authentication failed. Please check your GEMINI_API_KEY configuration."],
+                    "opportunities": [],
+                    "detailed_analysis": "The analysis service cannot authenticate. Please verify your API key configuration.",
+                    "error": "API key authentication failed. Please check your GEMINI_API_KEY configuration."
+                }
+            
+            # Generic LLM error
             return {
                 "score": 50.0,
                 "recommendation": "unknown",
-                "risk_report": {},
-                "error": str(e)
+                "alignment_score": 50.0,
+                "win_probability": 50.0,
+                "competitive_risk": 50.0,
+                "timeline_scope_risk": 50.0,
+                "hidden_signals": [],
+                "risk_factors": [f"Analysis service error: {error_msg}"],
+                "opportunities": [],
+                "detailed_analysis": f"Unable to complete analysis due to: {error_msg}",
+                "error": error_msg
+            }
+            
+        except Exception as e:
+            # Handle other unexpected errors
+            error_msg = str(e)
+            print(f"[Go/No-Go Analyzer] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Check for circuit breaker errors in generic exceptions
+            if "Circuit breaker" in error_msg:
+                return {
+                    "score": 50.0,
+                    "recommendation": "unknown",
+                    "alignment_score": 50.0,
+                    "win_probability": 50.0,
+                    "competitive_risk": 50.0,
+                    "timeline_scope_risk": 50.0,
+                    "hidden_signals": [],
+                    "risk_factors": ["Gemini API is temporarily unavailable. Please try again in a moment."],
+                    "opportunities": [],
+                    "detailed_analysis": "The analysis service is currently unavailable. Please try again in a moment.",
+                    "error": "Service temporarily unavailable. Please try again in a moment."
+                }
+            
+            return {
+                "score": 50.0,
+                "recommendation": "unknown",
+                "alignment_score": 50.0,
+                "win_probability": 50.0,
+                "competitive_risk": 50.0,
+                "timeline_scope_risk": 50.0,
+                "hidden_signals": [],
+                "risk_factors": [f"Unexpected error: {error_msg}"],
+                "opportunities": [],
+                "detailed_analysis": f"An unexpected error occurred: {error_msg}",
+                "error": error_msg
             }
 
 # Global instance

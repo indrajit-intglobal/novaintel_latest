@@ -892,6 +892,12 @@ class ApiClient {
     });
   }
 
+  async deleteNotification(id: number): Promise<void> {
+    return this.request<void>(`/notifications/${id}`, {
+      method: "DELETE",
+    });
+  }
+
   // Publish Project as Case Study
   async publishProjectAsCaseStudy(projectId: number): Promise<any> {
     return this.request<any>(`/projects/${projectId}/publish-case-study`, {

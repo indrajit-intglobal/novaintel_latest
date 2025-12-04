@@ -9,6 +9,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class PermanentError(Exception):
+    """Exception for permanent errors that should not be retried."""
+    pass
+
+
 def retry(
     max_attempts: int = 3,
     backoff: str = "exponential",
@@ -36,6 +41,12 @@ def retry(
             for attempt in range(1, max_attempts + 1):
                 try:
                     return func(*args, **kwargs)
+                except PermanentError as e:
+                    # Don't retry permanent errors (e.g., leaked API keys)
+                    logger.error(
+                        f"Function {func.__name__} failed with permanent error: {e}"
+                    )
+                    raise
                 except exceptions as e:
                     last_exception = e
                     
@@ -100,6 +111,12 @@ def async_retry(
             for attempt in range(1, max_attempts + 1):
                 try:
                     return await func(*args, **kwargs)
+                except PermanentError as e:
+                    # Don't retry permanent errors (e.g., leaked API keys)
+                    logger.error(
+                        f"Async function {func.__name__} failed with permanent error: {e}"
+                    )
+                    raise
                 except exceptions as e:
                     last_exception = e
                     

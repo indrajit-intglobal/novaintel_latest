@@ -11,6 +11,7 @@ import { useMutation } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api";
 import { toast } from "sonner";
 import WorkflowStepLoader from "@/components/WorkflowStepLoader";
+import { Loader } from "@/components/Loader";
 
 type Status = "idle" | "uploading" | "indexing" | "analyzing" | "ready";
 
@@ -113,7 +114,6 @@ export default function QuickProposal() {
     try {
       setStatus("uploading");
       setProgress(5);
-      updateStep(0, "active");
 
       // Step 1: Create project
       const project = await createProjectMutation.mutateAsync();
@@ -404,9 +404,8 @@ export default function QuickProposal() {
           <Card className="p-8 border-border/40 bg-gradient-card backdrop-blur-sm">
             <div className="space-y-6">
               <div className="text-center">
-                <Loader2 className="h-12 w-12 text-primary animate-spin mx-auto mb-4" />
-                <h2 className="text-2xl font-semibold mb-2">Generating Your Proposal</h2>
-                <p className="text-muted-foreground mb-4">
+                <Loader size="lg" text="Generating Your Proposal" />
+                <p className="text-muted-foreground mt-4">
                   This usually takes 60-90 seconds. Please don't close this page.
                 </p>
                 {projectId && (

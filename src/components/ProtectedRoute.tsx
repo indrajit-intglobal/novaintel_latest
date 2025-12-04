@@ -1,5 +1,6 @@
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { Loader } from "@/components/Loader";
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -12,14 +13,7 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   // Wait for auth check to complete before making decisions
   // Show loading state while checking authentication
   if (isLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-center">
-          <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
-          <p className="text-muted-foreground">Loading...</p>
-        </div>
-      </div>
-    );
+    return <Loader size="md" text="Loading..." fullScreen />;
   }
 
   // Only redirect if loading is complete AND definitely not authenticated

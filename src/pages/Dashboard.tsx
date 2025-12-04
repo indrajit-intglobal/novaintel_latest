@@ -19,7 +19,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Briefcase, Clock, Heart, TrendingUp, MoreVertical, Edit, Trash2, Eye, Loader2, Sparkles } from "lucide-react";
+import { Briefcase, Clock, Heart, TrendingUp, MoreVertical, Edit, Trash2, Eye, Sparkles } from "lucide-react";
+import { Loader } from "@/components/Loader";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient, Project } from "@/lib/api";
@@ -280,18 +281,12 @@ export default function Dashboard() {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-hero">
-        <div className="text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-xl bg-gradient-primary animate-pulse">
-            <span className="text-3xl font-bold text-primary-foreground">N</span>
-          </div>
-          <div className="mb-4 flex items-center justify-center gap-2">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          </div>
-          <h2 className="mb-2 font-heading text-xl font-semibold">Loading Dashboard</h2>
-          <p className="text-sm text-muted-foreground">Please wait while we fetch your data...</p>
-        </div>
-      </div>
+      <Loader 
+        size="xl" 
+        text="Loading Dashboard..." 
+        fullScreen 
+        className="text-center"
+      />
     );
   }
 
